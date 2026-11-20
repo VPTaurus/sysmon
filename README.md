@@ -52,6 +52,9 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
+Creating the release on the GitHub website (with a new `v*` tag) works too: the workflow builds and attaches
+`SysMon.exe` to it.
+
 ## Diagnostics
 
 Set `SYSMON_DIAG=1` before starting to log managed heap, GC counts, private memory, threads and handles to
