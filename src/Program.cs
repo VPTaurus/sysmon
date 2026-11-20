@@ -65,8 +65,48 @@ namespace SysMonApp
                 Environment.Exit(rs.Count(r => !r.Pass));
             }
 
+            if (args.Any(a => a.Equals("--update-now", StringComparison.OrdinalIgnoreCase)))
+            {
+                // headless: install the latest GitHub release over this exe if it is newer (used for testing / scripting)
+                S = Store.Load<Settings>("config.json");
+                try
+                {
+                    var r = Updater.FetchLatest();
+                    if (Updater.Compare(r.Version, Version) > 0 && r.Url != null) Updater.Install(r, () => Environment.Exit(0));
+                    else Store.Log("update-now: already up to date (" + Version + ", latest " + r.Version + ")");
+                }
+                catch (Exception ex) { Store.Log("update-now: " + ex.Message); Environment.Exit(1); }
+                return;
+            }
+
+            bool quiet = args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase));
+            if (args.Any(a => a.Equals("--install", StringComparison.OrdinalIgnoreCase)))
+            {
+                S = Store.Load<Settings>("config.json");
+                try { Installer.Install(!quiet); } catch (Exception ex) { Store.Log("install: " + ex.Message); Environment.Exit(1); }
+                return;
+            }
+            if (args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase)))
+            {
+                S = Store.Load<Settings>("config.json");
+                Installer.Uninstall(quiet);
+                return;
+            }
+
+            // a release build started from outside the install folder (e.g. downloaded): offer to install it, once per version
+            {
+                var s0 = Store.Load<Settings>("config.json");
+                if (!Installer.IsInstalledCopy && !Updater.IsDevBuild && !Store.IsCustomDir && s0.InstallPromptVersion != Version && args.Length == 0)
+                {
+                    s0.InstallPromptVersion = Version;
+                    Store.Save("config.json", s0);
+                    S = s0;
+                    if (Installer.OfferInstall()) return;   // the installed copy has been started
+                }
+            }
+
             bool created;
-            mutex = new Mutex(true, @"Local\SysMonWidget_v2", out created);
+            mutex = new Mutex(true, @"Local\SysMonWidget_v2" + (Store.IsCustomDir ? "_" + Store.Dir.ToLowerInvariant().GetHashCode().ToString("x") : ""), out created);
             if (!created) return;
 
             S = Store.Load<Settings>("config.json");
@@ -83,6 +123,7 @@ namespace SysMonApp
 
             // keep the startup entry pointing at this exe if it was moved
             if (IsStartup()) SetStartup(true);
+            if (Installer.IsInstalledCopy) Installer.Register();   // keeps the Settings > Apps entry (version, size) current
 
             try
             {
@@ -117,6 +158,14 @@ namespace SysMonApp
             if (S.WidgetVisible) W.Show();
             if (S.TaskbarReadout) { Readout = new TaskbarReadout(); Readout.Show(); }
             if (openDash) ShowDashboard();
+            int ri = Array.FindIndex(args, a => a.Equals("--report", StringComparison.OrdinalIgnoreCase));
+            if (ri >= 0)
+            {
+                DateTime rd;
+                if (!(ri + 1 < args.Length && DateTime.TryParseExact(args[ri + 1], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out rd)))
+                    rd = DateTime.Today.AddDays(-1);
+                ReportWindow.ShowDay(rd);
+            }
             if (args.Any(a => a.Equals("--show-selftest", StringComparison.OrdinalIgnoreCase)))
             {
                 // run the self-test at startup and put its detections on the live dashboard (demo / testing)
@@ -128,6 +177,7 @@ namespace SysMonApp
             System.Threading.Tasks.Task.Factory.StartNew(() =>
             {
                 LogStore.Cleanup(S.LogKeepDays);
+                LogStore.BuildSummaries();
                 var hist = LogStore.Load(DateTime.Now.AddHours(-24), DateTime.Now);
                 W.Dispatcher.BeginInvoke(new Action(() => Detector.Seed(hist)));
             });
@@ -146,11 +196,30 @@ namespace SysMonApp
                         me.PrivateMemorySize64 / 1048576.0, me.Threads.Count, me.HandleCount));
                 }
                 if (DateTime.Now.Second < 10) Store.Save("usage.json", Usage);
+                // once a day: update check (release builds only) and the morning report about yesterday
+                string today = DateTime.Today.ToString("yyyy-MM-dd");
+                if (S.UpdateCheck && !Updater.IsDevBuild && S.LastUpdateCheck != today && (DateTime.Now - Process.GetCurrentProcess().StartTime).TotalSeconds > 60)
+                {
+                    S.LastUpdateCheck = today;
+                    Updater.CheckAsync(false);
+                }
+                TimeSpan at;
+                if (S.DailyReport && S.LastReportShown != today && Utilities.TryTime(S.DailyReportTime, out at) && DateTime.Now.TimeOfDay >= at)
+                {
+                    S.LastReportShown = today; SaveSettings();
+                    var y = DateTime.Today.AddDays(-1);
+                    System.Threading.Tasks.Task.Factory.StartNew(() => DayReport.Build(y)).ContinueWith(tk =>
+                    {
+                        if (tk.Exception == null && tk.Result.HasData)
+                            W.Dispatcher.BeginInvoke(new Action(() =>
+                                Notify(12000, "Yesterday on your PC", tk.Result.OneLine(), WF.ToolTipIcon.Info, () => ReportWindow.ShowDay(y))));
+                    });
+                }
                 if (DateTime.Today != lastCleanupDay)
                 {
                     lastCleanupDay = DateTime.Today;
                     int keep = S.LogKeepDays;
-                    System.Threading.Tasks.Task.Factory.StartNew(() => LogStore.Cleanup(keep));
+                    System.Threading.Tasks.Task.Factory.StartNew(() => { LogStore.Cleanup(keep); LogStore.BuildSummaries(); });
                 }
             };
             t.Start();
@@ -314,8 +383,38 @@ namespace SysMonApp
             if (S.Logging) LogStore.AppendAnomaly(a);
             // rules that duplicate the simple alerts stay quiet while alerts are on
             if (S.AnomalyNotify && a.Severity != "info" && !(a.Quiet && S.AlertsOn))
-                Tray.ShowBalloonTip(8000, a.Severity == "critical" ? "Critical anomaly" : "Anomaly detected", a.Message, WF.ToolTipIcon.Warning);
+                Notify(8000, a.Severity == "critical" ? "Critical anomaly" : "Anomaly detected", a.Message, WF.ToolTipIcon.Warning, ShowDashboard);
             if (Dash != null) Dash.OnAnomaly(a);
+        }
+
+        // all notifications go through here, so a click runs the action of the notification that was clicked
+        static Action balloonAction;
+        public static void Notify(int ms, string title, string text, WF.ToolTipIcon icon, Action onClick)
+        {
+            if (Tray == null) return;
+            balloonAction = onClick;
+            Tray.ShowBalloonTip(ms, title, text, icon);
+        }
+
+        public static void OfferUpdate()
+        {
+            var r = Updater.Available;
+            if (r == null) { Updater.CheckAsync(true); return; }
+            var ans = System.Windows.MessageBox.Show("Update SysMon from " + Version + " to " + r.Version + " now?\n\nSysMon downloads the new version from GitHub, closes and restarts. " +
+                                                     "Your settings and logs are kept.\n\nYes = update now,  No = remind me later,  Cancel = skip this version.",
+                                                     "SysMon update", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (ans == MessageBoxResult.Cancel) { S.SkipVersion = r.Version; SaveSettings(); return; }
+            if (ans != MessageBoxResult.Yes) return;
+            System.Threading.Tasks.Task.Factory.StartNew(() =>
+            {
+                try { Updater.Install(r, () => W.Dispatcher.BeginInvoke(new Action(Exit))); }
+                catch (Exception ex)
+                {
+                    Store.Log("update: " + ex.Message);
+                    W.Dispatcher.BeginInvoke(new Action(() => Notify(8000, "Update failed", ex.Message + " You can download it from the Releases page.", WF.ToolTipIcon.Error,
+                                                                      () => Process.Start(Updater.ReleasesPage))));
+                }
+            });
         }
 
         public static void ShowSelfTest()
@@ -341,7 +440,7 @@ namespace SysMonApp
             if (Dash == null) { S.DashRange = "15 min"; ShowDashboard(); }
             else { Dash.SetRange("15 min"); ShowDashboard(); }
             var first = hits.FirstOrDefault(h => h.Severity != "info");
-            if (first != null) Tray.ShowBalloonTip(6000, "Anomaly detected (test)", first.Message, WF.ToolTipIcon.Warning);
+            if (first != null) Notify(6000, "Anomaly detected (test)", first.Message, WF.ToolTipIcon.Warning, ShowDashboard);
         }
 
         public static void ShowDashboard()
@@ -443,7 +542,11 @@ namespace SysMonApp
             trayTaskbar = new WF.ToolStripMenuItem("Show on taskbar") { Checked = S.TaskbarReadout, CheckOnClick = true };
             trayTaskbar.Click += (s, e) => { S.TaskbarReadout = trayTaskbar.Checked; Apply(); };
             menu.Items.Add(trayTaskbar);
+            menu.Items.Add("Daily report...", null, (s, e) => ReportWindow.ShowDay(DateTime.Today.AddDays(-1)));
             menu.Items.Add("Settings...", null, (s, e) => ShowSettings());
+            var upd = new WF.ToolStripMenuItem("Check for updates", null, (s, e) => OfferUpdate());
+            menu.Items.Add(upd);
+            menu.Opening += (s, e) => upd.Text = Updater.Available != null ? "⬆ Update to " + Updater.Available.Version + "..." : "Check for updates";
 
             var awake = new WF.ToolStripMenuItem("Keep awake");
             var choices = new[] { Tuple.Create("30 minutes", (TimeSpan?)TimeSpan.FromMinutes(30)), Tuple.Create("1 hour", (TimeSpan?)TimeSpan.FromHours(1)),
@@ -454,6 +557,9 @@ namespace SysMonApp
                 var c2 = c;
                 awake.DropDownItems.Add(c.Item1, null, (s, e) => Utilities.KeepAwake(c2.Item2));
             }
+            var untilLast = new WF.ToolStripMenuItem("Until " + S.AwakeUntilTime, null, (s, e) => Utilities.KeepAwakeUntil(S.AwakeUntilTime));
+            awake.DropDownItems.Add(untilLast);
+            awake.DropDownItems.Add("Until a set time...", null, (s, e) => Utilities.AskUntilTime());
             awake.DropDownItems.Add("-");
             var awakeOff = new WF.ToolStripMenuItem("Off", null, (s, e) => Utilities.StopAwake());
             awake.DropDownItems.Add(awakeOff);
@@ -465,6 +571,7 @@ namespace SysMonApp
             {
                 awakeOff.Checked = !Utilities.AwakeActive;
                 awake.DropDownItems[4].Text = Utilities.AwakeForever ? "Until I turn it off  ✓" : "Until I turn it off";
+                untilLast.Text = "Until " + S.AwakeUntilTime + (Utilities.AwakeActive && Utilities.AwakeUntilClock ? "  ✓" : "");
                 nudge.Checked = S.NudgeOn;
                 nudge.Text = "Presence nudge (mouse)  " + S.NudgeFrom + "-" + S.NudgeTo;
             };
@@ -476,7 +583,7 @@ namespace SysMonApp
             menu.Items.Add("-");
             menu.Items.Add("Exit", null, (s, e) => Exit());
             Tray.ContextMenuStrip = menu;
-            Tray.MouseClick += (s, e) => { if (e.Button == WF.MouseButtons.Left) ToggleVisible(); };
+            Tray.BalloonTipClicked += (s, e) => { var a = balloonAction; balloonAction = null; if (a != null) a(); };            Tray.MouseClick += (s, e) => { if (e.Button == WF.MouseButtons.Left) ToggleVisible(); };
         }
 
         static void ToggleVisible()
@@ -509,7 +616,7 @@ namespace SysMonApp
             DateTime t;
             if (fired.TryGetValue(key, out t) && (DateTime.Now - t).TotalMinutes < Math.Max(1, S.AlertCooldownMin)) return;
             fired[key] = DateTime.Now;
-            Program.Tray.ShowBalloonTip(6000, title, text, WF.ToolTipIcon.Warning);
+            Program.Notify(6000, title, text, WF.ToolTipIcon.Warning, Program.ShowDashboard);
         }
 
         public void Check(Snapshot s)

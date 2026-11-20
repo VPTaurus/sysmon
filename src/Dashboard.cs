@@ -146,6 +146,7 @@ namespace SysMonApp
             hdr.Children.Add(titleSp);
 
             var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            actions.Children.Add(Pill("Daily report", false, () => ReportWindow.ShowDay(DateTime.Today.AddDays(-1))));
             actions.Children.Add(Pill("Export CSV", false, Export));
             actions.Children.Add(Pill("Logs folder", false, () => { Directory.CreateDirectory(LogStore.Dir); Process.Start("explorer.exe", "\"" + LogStore.Dir + "\""); }));
             actions.Children.Add(Pill("Settings", false, Program.ShowSettings));
@@ -271,6 +272,122 @@ namespace SysMonApp
                 string r2 = r;
                 rangeBar.Children.Add(Pill(r == "15 min" ? "Live 15 min" : r, S.DashRange == r, () => SetRange(r2)));
             }
+            Border cmp = null;
+            cmp = Pill(Comparing ? "vs " + CompLabel + "  ▾" : "Compare  ▾", Comparing, () => OpenCompareMenu(cmp));
+            cmp.Margin = new Thickness(14, 0, 3, 0);
+            cmp.ToolTip = "Overlay an earlier period on the charts";
+            rangeBar.Children.Add(cmp);
+        }
+
+        // ---------------------------------------------------------------- compare with an earlier period
+        List<Rec> compRecs = new List<Rec>(), compView = new List<Rec>();
+        DateTime compLoadedAt = DateTime.MinValue;
+        int compLoadId;
+
+        bool Comparing { get { return !string.IsNullOrEmpty(S.DashCompare) && S.DashCompare != "Off"; } }
+
+        TimeSpan CompOffset
+        {
+            get
+            {
+                switch (S.DashCompare)
+                {
+                    case "Previous": return Span(S.DashRange);
+                    case "Yesterday": return TimeSpan.FromDays(1);
+                    case "LastWeek": return TimeSpan.FromDays(7);
+                    default: return TimeSpan.Zero;
+                }
+            }
+        }
+
+        string CompLabel
+        {
+            get
+            {
+                if (S.DashCompare == "Yesterday") return "yesterday";
+                if (S.DashCompare == "LastWeek") return "last week";
+                switch (S.DashRange)
+                {
+                    case "15 min": return "previous 15 min";
+                    case "6 hours": return "previous 6 h";
+                    case "24 hours": return "previous day";
+                    case "7 days": return "previous week";
+                    case "30 days": return "previous 30 days";
+                    default: return "previous hour";
+                }
+            }
+        }
+
+        void OpenCompareMenu(Border target)
+        {
+            var cm = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Bottom };
+            var opts = new[] { Tuple.Create("Off", "Don't compare"), Tuple.Create("Previous", "Previous period (the " + PrevName() + " before)"),
+                               Tuple.Create("Yesterday", "Same time yesterday"), Tuple.Create("LastWeek", "Same time last week") };
+            foreach (var o in opts)
+            {
+                var key = o.Item1;
+                var mi = new MenuItem { Header = o.Item2, IsCheckable = true, IsChecked = (S.DashCompare ?? "Off") == key };
+                mi.Click += (s, e) =>
+                {
+                    S.DashCompare = key; Program.SaveSettings();
+                    Build(); LoadCompare(); Redraw();
+                };
+                cm.Items.Add(mi);
+            }
+            cm.IsOpen = true;
+        }
+
+        string PrevName()
+        {
+            switch (S.DashRange)
+            {
+                case "15 min": return "15 minutes";
+                case "6 hours": return "6 hours";
+                case "24 hours": return "24 hours";
+                case "7 days": return "week";
+                case "30 days": return "30 days";
+                default: return "hour";
+            }
+        }
+
+        // loads the comparison period from the logs (a little past "now - offset", so it can follow the live edge)
+        void LoadCompare()
+        {
+            int id = ++compLoadId;
+            if (!Comparing || !S.Logging) { compRecs = new List<Rec>(); compView = new List<Rec>(); compLoadedAt = DateTime.Now; return; }
+            var off = CompOffset; var span = Span(S.DashRange);
+            var cf = DateTime.Now - span - off;
+            var ct = DateTime.Now - off + TimeSpan.FromMinutes(Math.Max(10, span.TotalMinutes / 10));
+            if (ct > DateTime.Now) ct = DateTime.Now;
+            compLoadedAt = DateTime.Now;
+            Task.Factory.StartNew(() =>
+            {
+                List<Rec> r;
+                try { r = LogStore.Load(cf, ct, (ct - cf).TotalHours > 24.5); } catch (Exception ex) { Store.Log("compare load: " + ex.Message); r = new List<Rec>(); }
+                Dispatcher.BeginInvoke(new Action(() => { if (id == compLoadId) { compRecs = r; Redraw(); } }));
+            });
+        }
+
+        static Tuple<Func<Rec, double>, Brush, string> Cp(Func<Rec, double> f, Brush b, string name) { return Tuple.Create(f, b, name); }
+
+        // "yesterday 18%  ▲ 3" (percentage points) or "yesterday 1.2 GB  ▼ 40%" (relative change)
+        string CompText(Func<Rec, double> sel, Func<double, string> f, bool points, bool sum = false)
+        {
+            Func<List<Rec>, double> agg = l =>
+            {
+                var v = l.Select(sel).Where(x => !double.IsNaN(x)).ToList();
+                return v.Count == 0 ? double.NaN : sum ? v.Sum() : v.Average();
+            };
+            double cur = agg(view), prev = agg(compView);
+            if (double.IsNaN(prev)) return CompLabel + ": no data";
+            string arrow = "", diff = "";
+            if (!double.IsNaN(cur))
+            {
+                double d = points ? cur - prev : (prev > 0 ? (cur - prev) / prev * 100 : 0);
+                arrow = Math.Abs(d) < 0.5 ? "=" : d > 0 ? "▲" : "▼";
+                diff = Math.Abs(d) < 0.5 ? "" : " " + Math.Abs(d).ToString("0") + (points ? "" : "%");
+            }
+            return CompLabel + " " + f(prev) + "  " + arrow + diff;
         }
 
         void AddCard(Panel p, string key, string title, Brush accent)
@@ -321,6 +438,12 @@ namespace SysMonApp
             {
                 head.Children.Add(new Rectangle { Width = 10, Height = 3, Fill = colors[i], Margin = new Thickness(14, 1, 5, 0), VerticalAlignment = VerticalAlignment.Center });
                 head.Children.Add(Txt(names[i], T.Faint, 11));
+            }
+            if (Comparing && idx < 6)
+            {
+                head.Children.Add(new Line { X1 = 0, X2 = 14, Y1 = 0, Y2 = 0, Stroke = colors[0], StrokeThickness = 1.5,
+                                             StrokeDashArray = new DoubleCollection { 2, 2 }, Margin = new Thickness(14, 1, 5, 0), VerticalAlignment = VerticalAlignment.Center });
+                head.Children.Add(Txt(CompLabel, T.Faint, 11));
             }
             headRow.Children.Add(head);
             DockPanel.SetDock(headRow, Dock.Top);
@@ -503,8 +626,35 @@ namespace SysMonApp
                 string name = procCells[r, 0].Text;
                 if (string.Equals(name, procView, StringComparison.OrdinalIgnoreCase)) CloseProcess(); else ShowProcess(name);
             };
+            // right-click a row: history / file location / end / search / copy
+            string menuProc = null;
+            g.PreviewMouseRightButtonDown += (s, e) =>
+            {
+                int r = (int)((e.GetPosition(g).Y - 22) / 19);
+                menuProc = r >= 0 && r < rows && procCells[r, 0].Text != "" ? procCells[r, 0].Text : null;
+            };
+            g.ContextMenu = new ContextMenu();
+            g.ContextMenuOpening += (s, e) =>
+            {
+                if (menuProc == null) { e.Handled = true; return; }
+                string name = menuProc;
+                var cm = g.ContextMenu;
+                cm.Items.Clear();
+                cm.Items.Add(new MenuItem { Header = ProcActions.Describe(name), IsEnabled = false });
+                cm.Items.Add(new Separator());
+                Action<string, Action> add = (h, a) => { var mi = new MenuItem { Header = h }; mi.Click += (o, a2) => a(); cm.Items.Add(mi); };
+                add(string.Equals(name, procView, StringComparison.OrdinalIgnoreCase) ? "Hide history" : "Show history", () =>
+                {
+                    if (string.Equals(name, procView, StringComparison.OrdinalIgnoreCase)) CloseProcess(); else ShowProcess(name);
+                });
+                add("Open file location", () => ProcActions.OpenLocation(name, this));
+                add("Search the web for \"" + name + "\"", () => ProcActions.Search(name));
+                add("Copy name", () => { try { Clipboard.SetText(name); } catch { } });
+                cm.Items.Add(new Separator());
+                add("End process...", () => ProcActions.End(name, this));
+            };
             sp.Children.Add(g);
-            sp.Children.Add(new TextBlock { Text = "Click a process to see its history", Foreground = T.Faint, FontSize = 10.5, Margin = new Thickness(0, 4, 0, 0) });
+            sp.Children.Add(new TextBlock { Text = "Click a process for its history, right-click for more", Foreground = T.Faint, FontSize = 10.5, Margin = new Thickness(0, 4, 0, 0) });
             return sp;
         }
 
@@ -544,6 +694,7 @@ namespace SysMonApp
             int id = ++loadId;
             focus = null; focusProcs = null;
             var to = DateTime.Now; var from = to - Span(S.DashRange);
+            LoadCompare();
             if (Live)
             {
                 recs = Program.Live.Where(r => r.T >= from).ToList();
@@ -560,7 +711,10 @@ namespace SysMonApp
                 List<Rec> r; List<Anomaly> a;
                 try
                 {
-                    r = logging ? LogStore.Load(from, to) : new List<Rec>();
+                    var sw = Stopwatch.StartNew();
+                    bool summaries = (to - from).TotalHours > 24.5;   // 5-minute summaries are plenty for 7 / 30 days
+                    r = logging ? LogStore.Load(from, to, summaries) : new List<Rec>();
+                    loadInfo = (summaries ? "5-minute summaries for past days, " : "") + "loaded in " + sw.ElapsedMilliseconds + " ms";
                     DateTime lastT = r.Count > 0 ? r[r.Count - 1].T : DateTime.MinValue;
                     r.AddRange(session.Where(x => x.T > lastT && x.T >= from));
                     a = logging ? LogStore.LoadAnomalies(from, to) : new List<Anomaly>();
@@ -580,6 +734,7 @@ namespace SysMonApp
         public void OnSample(Snapshot s, Rec live)
         {
             UpdateCurrent(s);
+            if (Comparing && (DateTime.Now - compLoadedAt).TotalMinutes > 5) LoadCompare();   // follow the moving window
             if (Live)
             {
                 recs.Add(live);
@@ -661,12 +816,11 @@ namespace SysMonApp
                        : "avg " + f(v.Average()) + Fmt.Dot + "p95 " + f(p95) + Fmt.Dot + "max " + f(v[v.Count - 1]);
         }
 
-        void SetChart(TimeChart c, DateTime from, DateTime to, double gap, string[] metrics, params Tuple<Func<Rec, double>, bool>[] series)
+        void SetChart(TimeChart c, DateTime from, DateTime to, double gap, string[] metrics, Tuple<Func<Rec, double>, Brush, string>[] comp,
+                      params Tuple<Func<Rec, double>, bool>[] series)
         {
             int n = Math.Max(100, (int)Math.Min(1200, c.ActualWidth > 0 ? c.ActualWidth : 800));
             c.From = from; c.To = to; c.GapSec = gap;
-            var legend = new[] { "average", "peak" };
-            var old = c.Series.ToList();
             c.Series.Clear();
             for (int i = 0; i < series.Length; i++)
             {
@@ -674,6 +828,18 @@ namespace SysMonApp
                 Downsample(view, from, to, n, series[i].Item1, series[i].Item2, out t, out v);
                 var cs = new ChartSeries { T = t, V = v };
                 c.Series.Add(cs);
+            }
+            // earlier period: same metric, shifted forward by the offset so it lines up, drawn dashed
+            if (comp != null && Comparing && compView.Count > 0)
+            {
+                var off = CompOffset;
+                foreach (var cp in comp)
+                {
+                    double[] t, v;
+                    Downsample(compView, from - off, to - off, n, cp.Item1, false, out t, out v);
+                    for (int k = 0; k < t.Length; k++) t[k] += off.TotalSeconds;
+                    c.Series.Add(new ChartSeries { T = t, V = v, Name = cp.Item3 + ", " + CompLabel, Stroke = Theme.Fill(cp.Item2, 0xC0), Fill = false, Dashed = true });
+                }
             }
             c.Marks = anoms.Where(a => metrics.Contains(a.Metric)).ToList();
             c.InvalidateVisual();
@@ -691,6 +857,7 @@ namespace SysMonApp
         static Tuple<Func<Rec, double>, bool> Sr(Func<Rec, double> f, bool max) { return Tuple.Create(f, max); }
 
         List<Rec> view = new List<Rec>();   // records inside the visible window
+        volatile string loadInfo = "";
 
         void Redraw()
         {
@@ -710,18 +877,22 @@ namespace SysMonApp
             }
             UpdateFocusBar(from, to);
             foreach (var c in new[] { cCpu, cRam, cGpu, cDisk, cNet, cPing }) c.Selected = focus;
+            var coff = CompOffset;
+            compView = Comparing ? compRecs.Where(r => r.T >= from - coff && r.T <= to - coff).ToList() : new List<Rec>();
 
-            SetChart(cCpu, from, to, gap, new[] { "cpu", "battery" }, Sr(r => r.Cpu, false), Sr(r => r.CpuMax, true));
+            SetChart(cCpu, from, to, gap, new[] { "cpu", "battery" }, new[] { Cp(r => r.Cpu, T.Cpu, "avg") }, Sr(r => r.Cpu, false), Sr(r => r.CpuMax, true));
             StyleChart(cCpu, "avg", T.Cpu, true, false, "peak", Theme.Fill(T.Cpu, 0x99), false, true);
-            SetChart(cRam, from, to, gap, new[] { "ram" }, Sr(r => r.Ram, false));
+            SetChart(cRam, from, to, gap, new[] { "ram" }, new[] { Cp(r => r.Ram, T.Ram, "used") }, Sr(r => r.Ram, false));
             StyleChart(cRam, "used", T.Ram, true, false);
-            SetChart(cGpu, from, to, gap, new[] { "gpu" }, Sr(r => r.Gpu, false), Sr(r => r.GpuMax, true));
+            SetChart(cGpu, from, to, gap, new[] { "gpu" }, new[] { Cp(r => r.Gpu, T.Gpu, "avg") }, Sr(r => r.Gpu, false), Sr(r => r.GpuMax, true));
             StyleChart(cGpu, "avg", T.Gpu, true, false, "peak", Theme.Fill(T.Gpu, 0x99), false, true);
-            SetChart(cDisk, from, to, gap, new[] { "disk" }, Sr(r => r.DiskR, false), Sr(r => r.DiskW, false));
+            SetChart(cDisk, from, to, gap, new[] { "disk" }, new[] { Cp(r => r.DiskR, T.Read, "read"), Cp(r => r.DiskW, T.Write, "write") },
+                     Sr(r => r.DiskR, false), Sr(r => r.DiskW, false));
             StyleChart(cDisk, "read", T.Read, true, false, "write", T.Write, true, false);
-            SetChart(cNet, from, to, gap, new[] { "rx", "tx" }, Sr(r => r.Rx, false), Sr(r => r.Tx, false));
+            SetChart(cNet, from, to, gap, new[] { "rx", "tx" }, new[] { Cp(r => r.Rx, T.Down, "↓"), Cp(r => r.Tx, T.Up, "↑") },
+                     Sr(r => r.Rx, false), Sr(r => r.Tx, false));
             StyleChart(cNet, "↓", T.Down, true, false, "↑", T.Up, true, false);
-            SetChart(cPing, from, to, gap, new[] { "ping" }, Sr(r => r.Ping, false), Sr(r => r.PingMax, true));
+            SetChart(cPing, from, to, gap, new[] { "ping" }, new[] { Cp(r => r.Ping, T.Ping, "avg") }, Sr(r => r.Ping, false), Sr(r => r.PingMax, true));
             StyleChart(cPing, "avg", T.Ping, true, false, "peak", Theme.Fill(T.Ping, 0x99), false, true);
             cPing.LossT = view.Where(r => r.PingLoss > 0).Select(r => TimeChart.Sec(r.T)).ToArray();
             UpdateExpandedStats();
@@ -738,12 +909,29 @@ namespace SysMonApp
             cards["ping"][1].Text = Stats(view.Select(r => r.Ping), ms) +
                                     (pl.Count > 0 ? Fmt.Dot + "loss " + Fmt.Pct(pl.Average(r => r.PingLoss)) : "");
             cards["bat"][1].Text = Stats(view.Select(r => r.Bat), v => v.ToString("0") + "%", true);
+            if (Comparing)
+            {
+                Func<IEnumerable<double>, Func<double, string>, string> avg = (v, f) =>
+                {
+                    var l = v.Where(x => !double.IsNaN(x)).ToList();
+                    return l.Count == 0 ? "no data" : "avg " + f(l.Average());
+                };
+                cards["cpu"][1].Text = avg(view.Select(r => r.Cpu), Fmt.Pct) + Fmt.Dot + CompText(r => r.Cpu, Fmt.Pct, true);
+                cards["ram"][1].Text = avg(view.Select(r => r.Ram), Fmt.Pct) + Fmt.Dot + CompText(r => r.Ram, Fmt.Pct, true);
+                cards["gpu"][1].Text = avg(view.Select(r => r.Gpu), Fmt.Pct) + Fmt.Dot + CompText(r => r.Gpu, Fmt.Pct, true);
+                cards["disk"][1].Text = avg(view.Select(r => r.DiskR + r.DiskW), rate) + Fmt.Dot + CompText(r => r.DiskR + r.DiskW, rate, false);
+                cards["rx"][1].Text = "total " + Fmt.Size(view.Sum(r => r.RxBytes)) + Fmt.Dot + CompText(r => r.RxBytes, Fmt.Size, false, true);
+                cards["tx"][1].Text = "total " + Fmt.Size(view.Sum(r => r.TxBytes)) + Fmt.Dot + CompText(r => r.TxBytes, Fmt.Size, false, true);
+                cards["ping"][1].Text = avg(view.Select(r => r.Ping), ms) + Fmt.Dot + CompText(r => r.Ping, ms, false);
+            }
             foreach (var kv in cards) kv.Value[1].ToolTip = kv.Value[1].Text;
 
             RenderAnomalies();
             UpdateCurrent(Program.LastSnap);
             ShowProcs();
-            status.Text = (Live ? "Live view (1-second samples)" : recs.Count.ToString("N0") + " samples (" + S.LogIntervalSec + " s each)") +
+            status.Text = (Live ? "Live view (1-second samples)" : recs.Count.ToString("N0") + " samples (" + loadInfo + ")") +
+                          (Comparing ? Fmt.Dot + (compView.Count > 0 ? "comparing with " + CompLabel + " (" + compView.Count.ToString("N0") + " samples)"
+                                                                        : "no logged data for " + CompLabel) : "") +
                           Fmt.Dot + (S.Logging ? "Logging on, " + Fmt.Size(LogStore.SizeBytes()) + " in " + LogStore.Dir : "Logging is off - history only covers this session") +
                           Fmt.Dot + (S.Anomalies ? "Anomaly detection on (" + S.AnomalySensitivity.ToLower() + " sensitivity)" : "Anomaly detection off");
         }

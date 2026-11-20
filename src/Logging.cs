@@ -181,18 +181,85 @@ namespace SysMonApp
             return list;
         }
 
-        public static List<Rec> Load(DateTime from, DateTime to)
+        // useSummaries: for finished days read the 5-minute summary file (if built) instead of the raw log
+        public static List<Rec> Load(DateTime from, DateTime to, bool useSummaries = false)
         {
             var list = new List<Rec>();
             for (var d = from.Date; d <= to.Date; d = d.AddDays(1))
-                foreach (var l in ReadLines(Path.Combine(Dir, d.ToString("yyyy-MM-dd") + ".csv")))
+            {
+                string raw = RawPath(d), sum = SummaryPath(d);
+                string file = useSummaries && d < DateTime.Today && File.Exists(sum) ? sum : raw;
+                foreach (var l in ReadLines(file))
                 {
                     if (l.StartsWith("time")) continue;
                     var r = Rec.Parse(l);
                     if (r != null && r.T >= from && r.T <= to) list.Add(r);
                 }
+            }
             list.Sort((a, b) => a.T.CompareTo(b.T));
             return list;
+        }
+
+        // ---------------------------------------------------------------- 5-minute daily summaries
+        public const int SummaryMinutes = 5;
+        static string RawPath(DateTime d) { return Path.Combine(Dir, d.ToString("yyyy-MM-dd") + ".csv"); }
+        public static string SummaryPath(DateTime d) { return Path.Combine(Dir, "summary-" + d.ToString("yyyy-MM-dd") + ".csv"); }
+        public static bool HasSummary(DateTime d) { return File.Exists(SummaryPath(d)); }
+
+        static double Avg(IEnumerable<double> v) { var l = v.Where(x => !double.IsNaN(x)).ToList(); return l.Count > 0 ? l.Average() : double.NaN; }
+        static double Max(IEnumerable<double> v) { var l = v.Where(x => !double.IsNaN(x)).ToList(); return l.Count > 0 ? l.Max() : double.NaN; }
+        static double Min(IEnumerable<double> v) { var l = v.Where(x => !double.IsNaN(x)).ToList(); return l.Count > 0 ? l.Min() : double.NaN; }
+
+        // averages of averages, peaks of peaks, sums of byte counts, per 5 minutes
+        public static List<Rec> Summarize(List<Rec> raw)
+        {
+            long bucket = TimeSpan.FromMinutes(SummaryMinutes).Ticks;
+            var outp = new List<Rec>();
+            foreach (var g in raw.GroupBy(r => r.T.Ticks - r.T.Ticks % bucket).OrderBy(g => g.Key))
+            {
+                var rs = g.ToList();
+                var topC = rs.OrderByDescending(r => r.TopCpuPct).First();
+                var topM = rs.OrderByDescending(r => r.TopMemBytes).First();
+                var last = rs[rs.Count - 1];
+                outp.Add(new Rec
+                {
+                    T = new DateTime(g.Key), Cpu = Avg(rs.Select(r => r.Cpu)), CpuMax = Max(rs.Select(r => r.CpuMax)),
+                    Ram = Avg(rs.Select(r => r.Ram)), RamGB = Avg(rs.Select(r => r.RamGB)), Gpu = Avg(rs.Select(r => r.Gpu)), GpuMax = Max(rs.Select(r => r.GpuMax)),
+                    GpuMem = Avg(rs.Select(r => r.GpuMem)), DiskR = Avg(rs.Select(r => r.DiskR)), DiskW = Avg(rs.Select(r => r.DiskW)), DiskBusy = Max(rs.Select(r => r.DiskBusy)),
+                    Rx = Avg(rs.Select(r => r.Rx)), Tx = Avg(rs.Select(r => r.Tx)),
+                    RxBytes = rs.Sum(r => double.IsNaN(r.RxBytes) ? 0 : r.RxBytes), TxBytes = rs.Sum(r => double.IsNaN(r.TxBytes) ? 0 : r.TxBytes),
+                    Ping = Avg(rs.Select(r => r.Ping)), PingMax = Max(rs.Select(r => r.PingMax)), PingLoss = Avg(rs.Select(r => r.PingLoss)),
+                    Bat = Min(rs.Select(r => r.Bat)), OnAc = last.OnAc,
+                    TopCpu = topC.TopCpu, TopCpuPct = topC.TopCpuPct, TopMem = topM.TopMem, TopMemBytes = topM.TopMemBytes
+                });
+            }
+            return outp;
+        }
+
+        // builds summary files for finished days that don't have an up-to-date one (runs in the background)
+        public static int BuildSummaries()
+        {
+            int built = 0;
+            try
+            {
+                if (!Directory.Exists(Dir)) return 0;
+                foreach (var f in Directory.GetFiles(Dir, "????-??-??.csv"))
+                {
+                    DateTime d;
+                    if (!DateTime.TryParseExact(Path.GetFileNameWithoutExtension(f), "yyyy-MM-dd", IC, DateTimeStyles.None, out d) || d >= DateTime.Today) continue;
+                    string sum = SummaryPath(d);
+                    if (File.Exists(sum) && File.GetLastWriteTimeUtc(sum) >= File.GetLastWriteTimeUtc(f)) continue;
+                    var rows = Summarize(Load(d, d.AddDays(1).AddTicks(-1)));
+                    var lines = new List<string> { Rec.Header };
+                    lines.AddRange(rows.Select(r => r.ToCsv()));
+                    File.WriteAllLines(sum + ".tmp", lines);
+                    if (File.Exists(sum)) File.Delete(sum);
+                    File.Move(sum + ".tmp", sum);
+                    built++;
+                }
+            }
+            catch (Exception ex) { Store.Log("summaries: " + ex.Message); }
+            return built;
         }
 
         public static List<Anomaly> LoadAnomalies(DateTime from, DateTime to)
@@ -227,6 +294,7 @@ namespace SysMonApp
                 {
                     string n = Path.GetFileNameWithoutExtension(f);
                     if (n.StartsWith("processes-")) n = n.Substring(10);
+                    else if (n.StartsWith("summary-")) n = n.Substring(8);
                     DateTime d;
                     if (DateTime.TryParseExact(n, "yyyy-MM-dd", IC, DateTimeStyles.None, out d) && d < cutoff) File.Delete(f);
                 }

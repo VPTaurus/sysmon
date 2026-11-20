@@ -59,6 +59,8 @@ namespace SysMonApp
         public string AnomalySensitivity { get; set; }  // Low | Medium | High
         public bool AnomalyNotify { get; set; }
         public string DashRange { get; set; }
+        public string DashCompare { get; set; }     // Off | Previous | Yesterday | LastWeek
+        public string InstallPromptVersion { get; set; }   // version for which "install?" was already asked
         public bool HotkeysOn { get; set; }
         public string HotkeyDashboard { get; set; }
         public string HotkeyWidget { get; set; }
@@ -66,6 +68,7 @@ namespace SysMonApp
         public string HotkeyAwake { get; set; }
 
         public bool KeepAwakeScreen { get; set; }     // keep the display on too, not just the system
+        public string AwakeUntilTime { get; set; }    // last "keep awake until" time, "HH:mm"
         public bool NudgeOn { get; set; }             // tiny mouse nudge to keep presence "available"
         public string NudgeFrom { get; set; }         // "HH:mm"
         public string NudgeTo { get; set; }
@@ -74,15 +77,23 @@ namespace SysMonApp
 
         public string StartupView { get; set; }       // Remember | Widget | Taskbar | Dashboard | Tray
         public bool GpuRendering { get; set; }        // false = WPF software rendering (much lower memory)
+        public bool UpdateCheck { get; set; }         // check GitHub releases once a day
+        public string LastUpdateCheck { get; set; }   // yyyy-MM-dd
+        public string SkipVersion { get; set; }       // "don't remind me" for this release
+        public bool DailyReport { get; set; }         // morning notification with yesterday's summary
+        public string DailyReportTime { get; set; }   // "HH:mm"
+        public string LastReportShown { get; set; }   // yyyy-MM-dd
         public bool ShowClock { get; set; }
         public bool ClockSeconds { get; set; }
         public bool ClockDate { get; set; }
 
         public Settings()
         {
-            HotkeyAwake = "Ctrl+Alt+K"; KeepAwakeScreen = true;
+            HotkeyAwake = "Ctrl+Alt+K"; KeepAwakeScreen = true; AwakeUntilTime = "17:30";
             NudgeOn = false; NudgeFrom = "08:00"; NudgeTo = "18:00"; NudgeWeekdays = true; NudgeIdleMin = 4;
             ShowClock = true; ClockSeconds = false; ClockDate = true; StartupView = "Remember";
+            UpdateCheck = true; LastUpdateCheck = ""; SkipVersion = ""; DashCompare = "Off";
+            DailyReport = true; DailyReportTime = "09:00"; LastReportShown = "";
             HotkeysOn = true; HotkeyDashboard = "Ctrl+Alt+M"; HotkeyWidget = "Ctrl+Alt+W"; HotkeyClickThrough = "Ctrl+Alt+C";
             WidgetVisible = true; TaskbarReadout = false; TaskbarOffset = -1;
             Logging = true; LogIntervalSec = 10; LogKeepDays = 30; LogProcesses = true;
@@ -117,7 +128,11 @@ namespace SysMonApp
 
     static class Store
     {
-        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SysMonWidget");
+        // SYSMON_DATA_DIR lets a separate copy run against its own settings and logs (testing)
+        public static readonly string Dir = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SYSMON_DATA_DIR"))
+            ? Environment.GetEnvironmentVariable("SYSMON_DATA_DIR")
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SysMonWidget");
+        public static bool IsCustomDir { get { return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SYSMON_DATA_DIR")); } }
         static readonly JavaScriptSerializer js = new JavaScriptSerializer();
 
         public static T Load<T>(string file) where T : new()

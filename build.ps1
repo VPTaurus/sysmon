@@ -87,16 +87,9 @@ if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 
 # ---------- install (per user, no admin) ----------
 if ($Install) {
+    # the app's own installer: copies to %LOCALAPPDATA%\Programs\SysMon Widget, Start Menu shortcut, Settings > Apps entry
     $dest = Join-Path $env:LOCALAPPDATA 'Programs\SysMon Widget'
-    New-Item -ItemType Directory -Force $dest | Out-Null
-    Get-Process SysMon -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$dest*" } | Stop-Process -Force
-    Start-Sleep -Milliseconds 500
-    Copy-Item $out $dest -Force
-    $sh = New-Object -ComObject WScript.Shell
-    $lnk = $sh.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'SysMon Widget.lnk'))
-    $lnk.TargetPath = Join-Path $dest 'SysMon.exe'
-    $lnk.WorkingDirectory = $dest
-    $lnk.Description = 'Always-on-top system resource and network monitor'
-    $lnk.Save()
-    "Installed to $dest and added to the Start Menu"
+    $p = Start-Process $out -ArgumentList '--install', '--quiet' -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "Install failed (see %APPDATA%\SysMonWidget\error.log)" }
+    "Installed to $dest (Start Menu + Settings > Apps)"
 }

@@ -87,6 +87,34 @@ namespace SysMonApp
             Hint(p, "When click-through is on, use the tray icon to turn it off again.");
             Check(p, "Start with Windows", Program.IsStartup(), Program.SetStartup);
             Hint(p, "\"When SysMon starts\" applies each time the app starts, including with Windows. You can still show or hide everything afterwards from the tray icon.");
+
+            Gap(p);
+            p.Children.Add(new TextBlock { Text = "Updates  (you have " + Program.Version + ")", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 2) });
+            Check(p, "Check GitHub for new versions once a day", S.UpdateCheck, b => S.UpdateCheck = b);
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+            var check = new Button { Content = "Check now", Padding = new Thickness(10, 3, 10, 3) };
+            var install = new Button { Content = "Update now", Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(6, 0, 0, 0) };
+            var page = new Button { Content = "Releases page", Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(6, 0, 0, 0) };
+            var status = new TextBlock { Foreground = Brushes.Gray, FontSize = 11.5, Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap };
+            Action refresh = () =>
+            {
+                status.Text = Updater.Status + (Updater.IsDevBuild ? "  (development build: automatic checks are off)" : "");
+                install.Visibility = Updater.Available != null ? Visibility.Visible : Visibility.Collapsed;
+                if (Updater.Available != null) install.Content = "Update to " + Updater.Available.Version;
+            };
+            check.Click += (s, e) => Updater.CheckAsync(true);
+            install.Click += (s, e) => Program.OfferUpdate();
+            page.Click += (s, e) => { try { System.Diagnostics.Process.Start(Updater.ReleasesPage); } catch { } };
+            Updater.Changed += refresh;
+            Closed += (s, e) => Updater.Changed -= refresh;
+            refresh();
+            row.Children.Add(check); row.Children.Add(install); row.Children.Add(page);
+            p.Children.Add(row);
+            p.Children.Add(status);
+            var un = new Button { Content = "Uninstall SysMon...", Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 8, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+            un.Click += (s, e) => { if (Installer.Uninstall(false)) Program.Exit(); };
+            p.Children.Add(un);
+            Hint(p, Installer.IsInstalledCopy ? "Installed in " + Installer.Dir + " (also listed in Windows Settings > Apps)." : "This copy runs from " + System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly().Location) + " and is not the installed one.");
             return p;
         }
 
@@ -146,7 +174,7 @@ namespace SysMonApp
             Number(p, "Repeat the same alert after (minutes)", S.AlertCooldownMin, 1, 1440, v => S.AlertCooldownMin = v);
             Gap(p);
             var test = new Button { Content = "Send a test notification", Padding = new Thickness(10, 3, 10, 3), HorizontalAlignment = HorizontalAlignment.Left };
-            test.Click += (s, e) => Program.Tray.ShowBalloonTip(4000, "SysMon Widget", "Alerts will look like this.", System.Windows.Forms.ToolTipIcon.Info);
+            test.Click += (s, e) => Program.Notify(4000, "SysMon Widget", "Alerts will look like this.", System.Windows.Forms.ToolTipIcon.Info, null);
             p.Children.Add(test);
             return p;
         }
@@ -165,6 +193,13 @@ namespace SysMonApp
             open.Click += (s, e) => { System.IO.Directory.CreateDirectory(LogStore.Dir); System.Diagnostics.Process.Start("explorer.exe", "\"" + LogStore.Dir + "\""); };
             p.Children.Add(open);
 
+            Gap(p);
+            Check(p, "Show a daily report notification about yesterday", S.DailyReport, b => S.DailyReport = b);
+            TimeText(p, "    at", S.DailyReportTime, v => S.DailyReportTime = v);
+            var rep = new Button { Content = "Open daily report", Padding = new Thickness(10, 3, 10, 3), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 2, 0, 0) };
+            rep.Click += (s, e) => ReportWindow.ShowDay(DateTime.Today.AddDays(-1));
+            p.Children.Add(rep);
+
             Gap(p); Gap(p);
             Check(p, "Detect anomalies", S.Anomalies, b => S.Anomalies = b);
             var sens = new[] { "Low", "Medium", "High" };
@@ -182,23 +217,31 @@ namespace SysMonApp
         {
             var p = Page();
             p.Children.Add(new TextBlock { Text = "Keep PC awake", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 2) });
-            var choices = new[] { "Off", "30 minutes", "1 hour", "2 hours", "4 hours", "Until I turn it off" };
-            var spans = new TimeSpan?[] { null, TimeSpan.FromMinutes(30), TimeSpan.FromHours(1), TimeSpan.FromHours(2), TimeSpan.FromHours(4), null };
+            var choices = new[] { "Off", "30 minutes", "1 hour", "2 hours", "4 hours", "Until I turn it off", "Until a set time" };
+            var spans = new TimeSpan?[] { null, TimeSpan.FromMinutes(30), TimeSpan.FromHours(1), TimeSpan.FromHours(2), TimeSpan.FromHours(4), null, null };
             var statusText = new TextBlock { Foreground = Brushes.Gray, FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
             Action showStatus = () => statusText.Text = Utilities.Describe();
             var g = LabeledRow(p, "Keep awake for");
-            var c = new ComboBox { Width = 180, ItemsSource = choices, SelectedIndex = !Utilities.AwakeActive ? 0 : Utilities.AwakeForever ? 5 : -1 };
+            var c = new ComboBox { Width = 180, ItemsSource = choices,
+                                   SelectedIndex = !Utilities.AwakeActive ? 0 : Utilities.AwakeForever ? 5 : Utilities.AwakeUntilClock ? 6 : -1 };
             c.SelectionChanged += (s, e) =>
             {
                 int i = c.SelectedIndex;
                 if (i == 0) Utilities.StopAwake();
                 else if (i == 5) Utilities.KeepAwake(null);
+                else if (i == 6) Utilities.KeepAwakeUntil(S.AwakeUntilTime);
                 else if (i > 0) Utilities.KeepAwake(spans[i]);
                 showStatus();
             };
             Grid.SetColumn(c, 1); g.Children.Add(c);
             p.Children.Add(statusText);
             showStatus();
+            TimeText(p, "    \"Until a set time\" =", S.AwakeUntilTime, v =>
+            {
+                S.AwakeUntilTime = v;
+                if (Utilities.AwakeActive && Utilities.AwakeUntilClock) Utilities.KeepAwakeUntil(v);   // move the running end time
+                showStatus();
+            });
             Check(p, "Also keep the screen on (not only the PC)", S.KeepAwakeScreen, b => S.KeepAwakeScreen = b);
             Hint(p, "Uses the standard Windows power request (like a video player does), no simulated input. Also on the tray menu and " + S.HotkeyAwake + ".");
 
