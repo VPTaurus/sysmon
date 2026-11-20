@@ -1,0 +1,8 @@
+# build output (recreated by build.ps1)
+dist/
+app.ico
+
+# local test output / shortcuts
+selftest.txt
+*.lnk
+*.tmp
