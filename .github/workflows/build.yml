@@ -1,0 +1,53 @@
+# Builds SysMon.exe on every push / pull request and runs the anomaly self-test.
+# Pushing a tag like v1.2.0 also publishes a GitHub release with SysMon.exe attached.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags, for the dev version number
+
+      - name: Determine version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = ''
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $v = $env:GITHUB_REF_NAME.Substring(1) }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Version "${{ steps.ver.outputs.version }}"
+
+      - name: Anomaly self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process .\dist\SysMon.exe -ArgumentList '--selftest', "$PWD\selftest.txt" -Wait -PassThru
+          Get-Content .\selftest.txt
+          if ($p.ExitCode -ne 0) { throw "$($p.ExitCode) self-test scenario(s) failed" }
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SysMon
+          path: dist/SysMon.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist/SysMon.exe --title "SysMon $env:GITHUB_REF_NAME" --generate-notes

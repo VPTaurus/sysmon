@@ -15,7 +15,7 @@ namespace SysMonApp
 
         public SettingsWindow()
         {
-            Title = "SysMon Widget - Settings";
+            Title = "SysMon Widget " + Program.Version + " - Settings";
             Width = 420; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen; Topmost = true;
             FontFamily = new FontFamily("Segoe UI"); FontSize = 12.5;

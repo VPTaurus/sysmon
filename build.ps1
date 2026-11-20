@@ -1,14 +1,37 @@
 <#
   Builds dist\SysMon.exe with the .NET Framework 4.x compiler that ships with Windows (no SDK needed).
   -Install  also copies it to %LOCALAPPDATA%\Programs\SysMon Widget and adds a Start Menu shortcut.
+  -Version  release version, e.g. 1.2.0 (CI passes the tag). Without it: <last tag>-dev+<commit>.
 #>
-param([switch]$Install)
+param([switch]$Install, [string]$Version = '')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $fw   = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319"
 $wpf  = "$fw\WPF"
 $dist = Join-Path $root 'dist'
-New-Item -ItemType Directory -Force $dist | Out-Null
+$obj  = Join-Path $root 'obj'
+New-Item -ItemType Directory -Force $dist, $obj | Out-Null
+
+# ---------- version ----------
+if (-not $Version) {
+    $sha = ''; $tag = ''
+    try { $sha = (git -C $root rev-parse --short HEAD 2>$null) } catch {}
+    try { $tag = (git -C $root describe --tags --abbrev=0 2>$null) } catch {}
+    $base = if ($tag -match '^v?(\d+\.\d+\.\d+)') { $Matches[1] } else { '0.1.0' }
+    $Version = "$base-dev" + $(if ($sha) { "+$sha" } else { '' })
+}
+if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)') { throw "Version must start with major.minor.patch, got '$Version'" }
+$numeric = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+@"
+using System.Reflection;
+[assembly: AssemblyTitle("SysMon Widget")]
+[assembly: AssemblyProduct("SysMon Widget")]
+[assembly: AssemblyDescription("Always-on-top system resource and network monitor")]
+[assembly: AssemblyVersion("$numeric")]
+[assembly: AssemblyFileVersion("$numeric")]
+[assembly: AssemblyInformationalVersion("$Version")]
+"@ | Set-Content (Join-Path $obj 'AssemblyInfo.g.cs') -Encoding UTF8
+"Version $Version"
 
 # ---------- icon (multi-size, PNG entries) ----------
 Add-Type -AssemblyName System.Drawing
@@ -56,7 +79,7 @@ $refs = @(
     "$fw\System.dll", "$fw\System.Core.dll", "$fw\System.Drawing.dll", "$fw\System.Windows.Forms.dll", "$fw\System.Web.Extensions.dll"
 ) | ForEach-Object { "/r:`"$_`"" }
 $out = Join-Path $dist 'SysMon.exe'
-$srcs = Get-ChildItem (Join-Path $root 'src') -Filter *.cs | ForEach-Object { "`"$($_.FullName)`"" }
+$srcs = @(Get-ChildItem (Join-Path $root 'src') -Filter *.cs | ForEach-Object { "`"$($_.FullName)`"" }) + "`"$(Join-Path $obj 'AssemblyInfo.g.cs')`""
 $cscArgs = @('/nologo', '/target:winexe', '/platform:anycpu', '/optimize+', '/codepage:65001', "/win32icon:`"$icoPath`"", "/out:`"$out`"") + $refs + $srcs
 & "$fw\csc.exe" @cscArgs | Where-Object { $_ -notmatch 'C# 5|language versions|go.microsoft.com|^\s*$|This compiler is provided' }
 if ($LASTEXITCODE -ne 0) { throw "Build failed" }

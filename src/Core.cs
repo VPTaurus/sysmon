@@ -73,6 +73,7 @@ namespace SysMonApp
         public int NudgeIdleMin { get; set; }
 
         public string StartupView { get; set; }       // Remember | Widget | Taskbar | Dashboard | Tray
+        public bool GpuRendering { get; set; }        // false = WPF software rendering (much lower memory)
         public bool ShowClock { get; set; }
         public bool ClockSeconds { get; set; }
         public bool ClockDate { get; set; }

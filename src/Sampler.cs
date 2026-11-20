@@ -11,6 +11,7 @@ namespace SysMonApp
 {
     class DiskIo { public string Name; public double Read, Write, Active; }
     class ProcInfo { public string Name; public double Value, Cpu, Mem; }
+    struct ProcPoint { public DateTime T; public double Cpu, Mem; }
 
     class Snapshot
     {

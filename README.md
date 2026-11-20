@@ -1,5 +1,10 @@
 # SysMon Widget
 
+[![build](https://github.com/VPTaurus/sysmon/actions/workflows/build.yml/badge.svg)](https://github.com/VPTaurus/sysmon/actions/workflows/build.yml)
+
+**Download:** the latest `SysMon.exe` is on the [Releases](https://github.com/VPTaurus/sysmon/releases) page
+(every push also produces a build artifact on the Actions page).
+
 Always-on-top system resource and network monitor for Windows 10/11, with a fullscreen dashboard,
 statistics logging and anomaly detection. Single small `.exe`, no admin rights, no runtime to install
 (built against the .NET Framework 4.8 that ships with Windows).
@@ -10,7 +15,8 @@ statistics logging and anomaly detection. Single small `.exe`, no admin rights, 
   data usage, top processes, battery. Full / Compact / Mini layouts, 4 themes, snap to edges, click-through.
 - **Taskbar readout** – compact two-line meter on the taskbar; click to open the dashboard, drag to move.
 - **Dashboard** – live 15 min to 30 days, charts with hover, avg/p95/max cards, process table, per-core bars,
-  anomaly list; click an anomaly to zoom to it and see the processes logged at that time. F11 fullscreen, CSV export.
+  anomaly list; click an anomaly to zoom to it and see the processes logged at that time; click a process to chart
+  its CPU and memory history. F11 fullscreen, CSV export.
 - **Logging** – CSV per day in `%APPDATA%\SysMonWidget\logs` (10 s averages + peaks), per-minute process log,
   anomaly log, configurable retention.
 - **Anomaly detection** – learned per-metric baselines (EWMA, log-space for rates) plus rules: sustained overload,
@@ -32,6 +38,25 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Install   # also installs 
 
 Uses `csc.exe` from `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319` (C# 5), so keep the code C# 5 compatible
 (no `$"..."`, `?.`, `nameof`, expression-bodied members, auto-property initialisers).
+
+The version is stamped by `build.ps1` (`-Version 1.2.0`, otherwise `<last tag>-dev+<commit>`) and shown in the
+Settings title and dashboard subtitle.
+
+## Releases (GitHub Actions)
+
+`.github/workflows/build.yml` builds on Windows and runs the anomaly self-test on every push and pull request.
+To publish a release with `SysMon.exe` attached:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+## Diagnostics
+
+Set `SYSMON_DIAG=1` before starting to log managed heap, GC counts, private memory, threads and handles to
+`error.log` every 10 seconds. WPF runs in software rendering mode by default (keeps the GPU driver's memory and
+threads out of the process: ~90 MB instead of ~300 MB); set `"GpuRendering": true` in `config.json` to change that.
 
 ## Command-line switches
 

@@ -160,6 +160,27 @@ namespace SysMonApp
             return groups[when];
         }
 
+        // one process's CPU / memory from the per-minute process log (only minutes where it was in the top lists)
+        public static List<ProcPoint> LoadProcessHistory(string name, DateTime from, DateTime to)
+        {
+            var list = new List<ProcPoint>();
+            string prefix = "," + Rec.Clean(name) + ",";
+            for (var d = from.Date; d <= to.Date; d = d.AddDays(1))
+                foreach (var l in ReadLines(Path.Combine(Dir, "processes-" + d.ToString("yyyy-MM-dd") + ".csv")))
+                {
+                    if (l.Length < 21 || l.IndexOf(prefix, 19, StringComparison.OrdinalIgnoreCase) != 19) continue;
+                    var p = l.Split(',');
+                    if (p.Length < 4) continue;
+                    DateTime ts;
+                    if (!DateTime.TryParseExact(p[0], "yyyy-MM-dd HH:mm:ss", IC, DateTimeStyles.None, out ts) || ts < from || ts > to) continue;
+                    double c, m;
+                    double.TryParse(p[2], NumberStyles.Float, IC, out c); double.TryParse(p[3], NumberStyles.Float, IC, out m);
+                    list.Add(new ProcPoint { T = ts, Cpu = c, Mem = m });
+                }
+            list.Sort((a, b) => a.T.CompareTo(b.T));
+            return list;
+        }
+
         public static List<Rec> Load(DateTime from, DateTime to)
         {
             var list = new List<Rec>();

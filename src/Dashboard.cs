@@ -69,6 +69,7 @@ namespace SysMonApp
             PreviewKeyDown += (s, e) =>
             {
                 if (e.Key == Key.F11) { ToggleFullscreen(); e.Handled = true; }
+                else if (e.Key == Key.Escape && procView != null) { CloseProcess(); e.Handled = true; }
                 else if (e.Key == Key.Escape && expanded >= 0) { ToggleExpand(expanded); e.Handled = true; }
                 else if (e.Key == Key.Escape && focus != null) { Unfocus(); e.Handled = true; }
                 else if (e.Key == Key.Escape && fullscreen) { ToggleFullscreen(); e.Handled = true; }
@@ -196,7 +197,7 @@ namespace SysMonApp
 
             var charts = new UniformGrid { Columns = 2, Rows = 3, Margin = new Thickness(-4, -4, 4, -4) };
             chartGrid = charts;
-            chartPanels.Clear(); chartStats.Clear(); expandLabels.Clear();
+            chartPanels.Clear(); chartStats.Clear(); expandLabels.Clear(); chartTitles.Clear();
             Func<double, string> pct = Fmt.Pct, rate = v => Fmt.Rate(v, false), ms = v => v.ToString("0") + " ms";
             cCpu = AddChart(charts, "CPU", 100, 1, pct, new[] { "average", "peak" }, new[] { T.Cpu, Theme.Fill(T.Cpu, 0x99) });
             cRam = AddChart(charts, "Memory", 100, 1, pct, new[] { "used" }, new[] { T.Ram });
@@ -204,6 +205,8 @@ namespace SysMonApp
             cDisk = AddChart(charts, "Disk I/O", double.NaN, 1 << 20, rate, new[] { "read", "write" }, new[] { T.Read, T.Write });
             cNet = AddChart(charts, "Network", double.NaN, 64 << 10, rate, new[] { "download", "upload" }, new[] { T.Down, T.Up });
             cPing = AddChart(charts, "Ping  " + S.PingTarget, double.NaN, 20, ms, new[] { "average", "peak", "packet loss" }, new[] { T.Ping, Theme.Fill(T.Ping, 0x99), T.Bad });
+            pCpu = AddChart(charts, "Process CPU", double.NaN, 5, v => v.ToString("0.#") + "%", new[] { "share of total CPU" }, new[] { T.Cpu });
+            pMem = AddChart(charts, "Process memory", double.NaN, 50 << 20, Fmt.Size, new[] { "private memory" }, new[] { T.Ram });
             main.Children.Add(charts);
             ApplyExpand();
 
@@ -257,6 +260,7 @@ namespace SysMonApp
             S.DashRange = r; Program.SaveSettings();
             focus = null; focusProcs = null;
             BuildRangeBar(); Load();
+            if (procView != null) ShowProcess(procView);   // reload its history for the new range
         }
 
         void BuildRangeBar()
@@ -310,7 +314,9 @@ namespace SysMonApp
             headRow.Children.Add(stats);
 
             var head = new StackPanel { Orientation = Orientation.Horizontal };
-            head.Children.Add(Txt(title.ToUpper(), T.Muted, 11, true));
+            var titleText = Txt(title.ToUpper(), T.Muted, 11, true);
+            head.Children.Add(titleText);
+            chartTitles.Add(titleText);
             for (int i = 0; i < names.Length; i++)
             {
                 head.Children.Add(new Rectangle { Width = 10, Height = 3, Fill = colors[i], Margin = new Thickness(14, 1, 5, 0), VerticalAlignment = VerticalAlignment.Center });
@@ -333,26 +339,111 @@ namespace SysMonApp
 
         void ToggleExpand(int i)
         {
+            if (i >= 6) { CloseProcess(); return; }   // the two process charts close the process view
             expanded = expanded == i ? -1 : i;
             ApplyExpand();
             UpdateLayout();   // so the chart's new width is used for the data resolution
             Redraw();
         }
 
+        // panels 0-5: system charts (grid or one expanded); panels 6-7: process CPU / memory (process view)
         void ApplyExpand()
         {
             if (chartGrid == null) return;
-            bool any = expanded >= 0;
-            chartGrid.Rows = any ? 1 : 3; chartGrid.Columns = any ? 1 : 2;
+            bool proc = procView != null, any = expanded >= 0 && !proc;
+            chartGrid.Rows = proc ? 2 : any ? 1 : 3; chartGrid.Columns = proc || any ? 1 : 2;
             var charts = Charts;
             for (int j = 0; j < chartPanels.Count; j++)
             {
-                bool me = j == expanded;
-                chartPanels[j].Visibility = !any || me ? Visibility.Visible : Visibility.Collapsed;
-                charts[j].YTicks = me ? 8 : 4;
+                bool isProc = j >= 6, me = isProc ? proc : any && j == expanded;
+                chartPanels[j].Visibility = (isProc ? proc : !proc && (!any || me)) ? Visibility.Visible : Visibility.Collapsed;
+                if (!isProc) charts[j].YTicks = me ? 8 : 4;
                 expandLabels[j].Text = me ? "✕  Back to all graphs (Esc)" : "⤢";
                 chartStats[j].Visibility = me ? Visibility.Visible : Visibility.Collapsed;
             }
+            if (proc)
+            {
+                chartTitles[6].Text = procView.ToUpper() + "  ·  CPU";
+                chartTitles[7].Text = procView.ToUpper() + "  ·  MEMORY";
+            }
+        }
+
+        // ---------------------------------------------------------------- process history view
+        string procView;                                   // process shown in the two process charts, null = off
+        List<ProcPoint> procLog = new List<ProcPoint>();   // points from the per-minute process log
+        int procLoadId;
+        TimeChart pCpu, pMem;
+        readonly List<TextBlock> chartTitles = new List<TextBlock>();
+
+        void ShowProcess(string name)
+        {
+            procView = name; expanded = -1; procLog = new List<ProcPoint>();
+            int id = ++procLoadId;
+            if (!Live && S.Logging)
+            {
+                var to = DateTime.Now; var from = to - Span(S.DashRange);
+                Task.Factory.StartNew(() =>
+                {
+                    List<ProcPoint> l;
+                    try { l = LogStore.LoadProcessHistory(name, from, to); } catch { l = new List<ProcPoint>(); }
+                    Dispatcher.BeginInvoke(new Action(() => { if (id == procLoadId && procView == name) { procLog = l; Redraw(); } }));
+                });
+            }
+            ApplyExpand();
+            UpdateLayout();
+            Redraw();
+        }
+
+        void CloseProcess()
+        {
+            procView = null; procLoadId++;
+            ApplyExpand();
+            UpdateLayout();
+            Redraw();
+        }
+
+        static void Thin(List<ProcPoint> pts, int n, out double[] t, out double[] cpu, out double[] mem)
+        {
+            int step = Math.Max(1, (int)Math.Ceiling(pts.Count / (double)n));
+            var lt = new List<double>(); var lc = new List<double>(); var lm = new List<double>();
+            for (int i = 0; i < pts.Count; i += step)
+            {
+                int e = Math.Min(pts.Count, i + step);
+                double c = 0, m = 0;
+                for (int k = i; k < e; k++) { c += pts[k].Cpu; m = Math.Max(m, pts[k].Mem); }
+                lt.Add(TimeChart.Sec(pts[i].T)); lc.Add(c / (e - i)); lm.Add(m);
+            }
+            t = lt.ToArray(); cpu = lc.ToArray(); mem = lm.ToArray();
+        }
+
+        void RenderProc(DateTime from, DateTime to)
+        {
+            if (procView == null || pCpu == null) return;
+            // logged minutes, then the in-memory 2-second history for the most recent part
+            var pts = procLog.Where(p => p.T >= from && p.T <= to).ToList();
+            DateTime lastT = pts.Count > 0 ? pts[pts.Count - 1].T : DateTime.MinValue;
+            List<ProcPoint> recent;
+            if (Program.ProcHistory.TryGetValue(procView, out recent))
+                pts.AddRange(recent.Where(p => p.T > lastT && p.T >= from && p.T <= to));
+
+            double[] t, cpu, mem;
+            Thin(pts, Math.Max(200, (int)Math.Min(1500, pCpu.ActualWidth > 0 ? pCpu.ActualWidth : 1000)), out t, out cpu, out mem);
+            double gap = Live ? 8 : 150;
+            var marks = anoms.Where(a => a.Message.IndexOf(procView, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+            foreach (var c in new[] { pCpu, pMem })
+            {
+                c.From = from; c.To = to; c.GapSec = gap; c.YTicks = 6; c.Marks = marks; c.Selected = focus;
+                c.Series.Clear();
+            }
+            pCpu.Series.Add(new ChartSeries { Name = "CPU", Stroke = T.Cpu, T = t, V = cpu });
+            pMem.Series.Add(new ChartSeries { Name = "memory", Stroke = T.Ram, T = t, V = mem });
+            pCpu.InvalidateVisual(); pMem.InvalidateVisual();
+
+            string src = Live || procLog.Count == 0 ? "2-second samples" : "per-minute log (gaps = not in the top 10 then)";
+            Func<double[], Func<double, string>, string> st = (v, f) =>
+                v.Length == 0 ? "no data in this period" : "min " + f(v.Min()) + "   avg " + f(v.Average()) + "   max " + f(v.Max());
+            chartStats[6].Text = st(cpu, x => x.ToString("0.0") + "%") + "      " + src;
+            chartStats[7].Text = st(mem, Fmt.Size) + (mem.Length > 1 ? "      change " + (mem[mem.Length - 1] >= mem[0] ? "+" : "-") + Fmt.Size(Math.Abs(mem[mem.Length - 1] - mem[0])) : "");
         }
 
         // min / avg / max of each series in the visible window, shown in an expanded chart's header
@@ -398,7 +489,22 @@ namespace SysMonApp
                     procCells[r, c] = t;
                 }
             }
+            // click a row: show that process's CPU / memory history in the chart area
+            g.Background = Brushes.Transparent;
+            g.MouseMove += (s, e) =>
+            {
+                int r = (int)((e.GetPosition(g).Y - 22) / 19);
+                g.Cursor = r >= 0 && r < rows && procCells[r, 0].Text != "" ? Cursors.Hand : null;
+            };
+            g.MouseLeftButtonUp += (s, e) =>
+            {
+                int r = (int)((e.GetPosition(g).Y - 22) / 19);
+                if (r < 0 || r >= rows || procCells[r, 0].Text == "") return;
+                string name = procCells[r, 0].Text;
+                if (string.Equals(name, procView, StringComparison.OrdinalIgnoreCase)) CloseProcess(); else ShowProcess(name);
+            };
             sp.Children.Add(g);
+            sp.Children.Add(new TextBlock { Text = "Click a process to see its history", Foreground = T.Faint, FontSize = 10.5, Margin = new Thickness(0, 4, 0, 0) });
             return sp;
         }
 
@@ -428,7 +534,8 @@ namespace SysMonApp
             var s = Program.LastSnap;
             string mem = s != null ? s.MemTotalGB.ToString("0") + " GB RAM" : "";
             subtitle.Text = Environment.MachineName + Fmt.Dot + Program.CpuName + Fmt.Dot + Environment.ProcessorCount + " threads" +
-                            (mem != "" ? Fmt.Dot + mem : "") + Fmt.Dot + "up " + Fmt.Duration(Native.GetTickCount64() / 1000.0);
+                            (mem != "" ? Fmt.Dot + mem : "") + Fmt.Dot + "up " + Fmt.Duration(Native.GetTickCount64() / 1000.0) +
+                            Fmt.Dot + "SysMon " + Program.Version;
         }
 
         // ---------------------------------------------------------------- data
@@ -618,6 +725,7 @@ namespace SysMonApp
             StyleChart(cPing, "avg", T.Ping, true, false, "peak", Theme.Fill(T.Ping, 0x99), false, true);
             cPing.LossT = view.Where(r => r.PingLoss > 0).Select(r => TimeChart.Sec(r.T)).ToArray();
             UpdateExpandedStats();
+            RenderProc(from, to);
 
             Func<double, string> rate = v => Fmt.Rate(v, false), ms = v => v.ToString("0") + " ms";
             cards["cpu"][1].Text = Stats(view.Select(r => r.Cpu), Fmt.Pct);
@@ -752,6 +860,9 @@ namespace SysMonApp
                 bool has = r < list.Count;
                 procCells[r, 0].Text = has ? list[r].Name : "";
                 procCells[r, 0].ToolTip = has ? list[r].Name : null;
+                bool sel = has && string.Equals(list[r].Name, procView, StringComparison.OrdinalIgnoreCase);
+                procCells[r, 0].Foreground = sel ? T.Cpu : T.Fg;
+                procCells[r, 0].FontWeight = sel ? FontWeights.SemiBold : FontWeights.Normal;
                 procCells[r, 1].Text = has ? list[r].Cpu.ToString("0.0") + "%" : "";
                 procCells[r, 2].Text = has ? Fmt.Size(list[r].Mem) : "";
             }

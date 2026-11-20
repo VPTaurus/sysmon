@@ -1,5 +1,6 @@
 # build output (recreated by build.ps1)
 dist/
+obj/
 app.ico
 
 # local test output / shortcuts
