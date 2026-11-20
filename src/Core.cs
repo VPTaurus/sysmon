@@ -63,9 +63,25 @@ namespace SysMonApp
         public string HotkeyDashboard { get; set; }
         public string HotkeyWidget { get; set; }
         public string HotkeyClickThrough { get; set; }
+        public string HotkeyAwake { get; set; }
+
+        public bool KeepAwakeScreen { get; set; }     // keep the display on too, not just the system
+        public bool NudgeOn { get; set; }             // tiny mouse nudge to keep presence "available"
+        public string NudgeFrom { get; set; }         // "HH:mm"
+        public string NudgeTo { get; set; }
+        public bool NudgeWeekdays { get; set; }
+        public int NudgeIdleMin { get; set; }
+
+        public string StartupView { get; set; }       // Remember | Widget | Taskbar | Dashboard | Tray
+        public bool ShowClock { get; set; }
+        public bool ClockSeconds { get; set; }
+        public bool ClockDate { get; set; }
 
         public Settings()
         {
+            HotkeyAwake = "Ctrl+Alt+K"; KeepAwakeScreen = true;
+            NudgeOn = false; NudgeFrom = "08:00"; NudgeTo = "18:00"; NudgeWeekdays = true; NudgeIdleMin = 4;
+            ShowClock = true; ClockSeconds = false; ClockDate = true; StartupView = "Remember";
             HotkeysOn = true; HotkeyDashboard = "Ctrl+Alt+M"; HotkeyWidget = "Ctrl+Alt+W"; HotkeyClickThrough = "Ctrl+Alt+C";
             WidgetVisible = true; TaskbarReadout = false; TaskbarOffset = -1;
             Logging = true; LogIntervalSec = 10; LogKeepDays = 30; LogProcesses = true;

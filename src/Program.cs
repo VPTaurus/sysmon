@@ -83,12 +83,29 @@ namespace SysMonApp
             Logger.Bucket += OnBucket;
             Detector.Detected += OnAnomaly;
 
+            Utilities.Init();
             W = new Widget();
             CreateTray();
+            Utilities.Changed += () => { W.RefreshHeader(); W.RefreshMenu(); if (Dash != null) Dash.RefreshHeader(); };
+
+            // 2x per second: clocks in the widget and dashboard
+            var clock = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            clock.Tick += (s, e) => { W.RefreshHeader(); if (Dash != null) Dash.RefreshHeader(); };
+            clock.Start();
             try { Hotkeys.Apply(S); } catch (Exception ex) { Store.Log("hotkeys: " + ex.Message); }
+            // what to show at start: the chosen view, or whatever was visible last time ("Remember")
+            bool openDash = args.Any(a => a.Equals("--dashboard", StringComparison.OrdinalIgnoreCase));
+            switch (S.StartupView)
+            {
+                case "Widget": S.WidgetVisible = true; S.TaskbarReadout = false; break;
+                case "Taskbar": S.WidgetVisible = false; S.TaskbarReadout = true; break;
+                case "Tray": S.WidgetVisible = false; S.TaskbarReadout = false; break;
+                case "Dashboard": openDash = true; break;   // widget / taskbar readout as last time
+            }
+            if (trayTaskbar != null) trayTaskbar.Checked = S.TaskbarReadout;
             if (S.WidgetVisible) W.Show();
             if (S.TaskbarReadout) { Readout = new TaskbarReadout(); Readout.Show(); }
-            if (args.Any(a => a.Equals("--dashboard", StringComparison.OrdinalIgnoreCase))) ShowDashboard();
+            if (openDash) ShowDashboard();
             if (args.Any(a => a.Equals("--show-selftest", StringComparison.OrdinalIgnoreCase)))
             {
                 // run the self-test at startup and put its detections on the live dashboard (demo / testing)
@@ -317,6 +334,7 @@ namespace SysMonApp
             if (trayClick != null) trayClick.Checked = S.ClickThrough;
             if (trayTaskbar != null) trayTaskbar.Checked = S.TaskbarReadout;
             try { Hotkeys.Apply(S); } catch (Exception ex) { Store.Log("hotkeys: " + ex.Message); }
+            Utilities.ApplyState();   // picks up "keep screen on" changes
             wakeSampler.Set(); wakePing.Set();
             if (settingsWin != null) settingsWin.Sync();
         }
@@ -356,6 +374,7 @@ namespace SysMonApp
         public static void Exit()
         {
             running = false;
+            try { Utilities.StopAwake(); } catch { }
             wakeSampler.Set(); wakePing.Set(); wakePublic.Set();
             SaveSettings();
             Store.Save("usage.json", Usage);
@@ -386,7 +405,32 @@ namespace SysMonApp
             trayTaskbar.Click += (s, e) => { S.TaskbarReadout = trayTaskbar.Checked; Apply(); };
             menu.Items.Add(trayTaskbar);
             menu.Items.Add("Settings...", null, (s, e) => ShowSettings());
-            trayClick = new WF.ToolStripMenuItem("Click-through") { Checked = S.ClickThrough, CheckOnClick = true };
+
+            var awake = new WF.ToolStripMenuItem("Keep awake");
+            var choices = new[] { Tuple.Create("30 minutes", (TimeSpan?)TimeSpan.FromMinutes(30)), Tuple.Create("1 hour", (TimeSpan?)TimeSpan.FromHours(1)),
+                                  Tuple.Create("2 hours", (TimeSpan?)TimeSpan.FromHours(2)), Tuple.Create("4 hours", (TimeSpan?)TimeSpan.FromHours(4)),
+                                  Tuple.Create("Until I turn it off", (TimeSpan?)null) };
+            foreach (var c in choices)
+            {
+                var c2 = c;
+                awake.DropDownItems.Add(c.Item1, null, (s, e) => Utilities.KeepAwake(c2.Item2));
+            }
+            awake.DropDownItems.Add("-");
+            var awakeOff = new WF.ToolStripMenuItem("Off", null, (s, e) => Utilities.StopAwake());
+            awake.DropDownItems.Add(awakeOff);
+            awake.DropDownItems.Add("-");
+            var nudge = new WF.ToolStripMenuItem("Presence nudge (mouse)") { CheckOnClick = true };
+            nudge.Click += (s, e) => { S.NudgeOn = nudge.Checked; Apply(); };
+            awake.DropDownItems.Add(nudge);
+            awake.DropDownOpening += (s, e) =>
+            {
+                awakeOff.Checked = !Utilities.AwakeActive;
+                awake.DropDownItems[4].Text = Utilities.AwakeForever ? "Until I turn it off  ✓" : "Until I turn it off";
+                nudge.Checked = S.NudgeOn;
+                nudge.Text = "Presence nudge (mouse)  " + S.NudgeFrom + "-" + S.NudgeTo;
+            };
+            menu.Items.Add(awake);
+            trayClick =new WF.ToolStripMenuItem("Click-through") { Checked = S.ClickThrough, CheckOnClick = true };
             trayClick.Click += (s, e) => { S.ClickThrough = trayClick.Checked; Apply(); };
             menu.Items.Add(trayClick);
             menu.Items.Add("Move to top-right corner", null, (s, e) => { W.Show(); W.MoveToCorner(); });

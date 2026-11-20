@@ -40,6 +40,7 @@ namespace SysMonApp
             Register(1, "dashboard", s.HotkeyDashboard, ToggleDashboard);
             Register(2, "widget", s.HotkeyWidget, () => { s.WidgetVisible = !Program.W.IsVisible; Program.Apply(); });
             Register(3, "clickthrough", s.HotkeyClickThrough, () => { s.ClickThrough = !s.ClickThrough; Program.Apply(); });
+            Register(4, "awake", s.HotkeyAwake, Utilities.ToggleAwake);
         }
 
         // while a shortcut is being recorded in Settings, release ours so the key press reaches the box

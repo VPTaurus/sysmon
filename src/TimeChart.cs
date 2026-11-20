@@ -25,6 +25,7 @@ namespace SysMonApp
         public double[] LossT = new double[0];
         public Theme Th;
         public Anomaly Selected;                 // highlighted (zoomed-to) anomaly
+        public int YTicks = 4;                   // horizontal grid lines (more when the chart is expanded)
         public Action<Anomaly> MarkClicked;
         Point hover = new Point(-1, -1);
         const double L = 58, R = 10, TP = 8, B = 20;
@@ -86,11 +87,11 @@ namespace SysMonApp
 
             // grid + y labels
             var gp = new Pen(Th.Track, 1); gp.Freeze();
-            for (int i = 0; i <= 4; i++)
+            for (int i = 0; i <= YTicks; i++)
             {
-                double y = Math.Round(TP + ph - ph * i / 4.0) + 0.5;
+                double y = Math.Round(TP + ph - ph * i / (double)YTicks) + 0.5;
                 dc.DrawLine(gp, new Point(L, y), new Point(L + pw, y));
-                var ft = Ft(Format(max * i / 4.0), 10, Th.Faint);
+                var ft = Ft(Format(max * i / (double)YTicks), 10, Th.Faint);
                 dc.DrawText(ft, new Point(L - 6 - ft.Width, y - ft.Height / 2));
             }
             // x labels

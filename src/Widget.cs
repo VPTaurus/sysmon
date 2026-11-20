@@ -26,6 +26,7 @@ namespace SysMonApp
         // UI references (rebuilt on every settings change)
         TextBlock tUptime, tCpu, tRam, tGpu, tDisk, tDown, tUp, tIf, tPingLbl, tPing, tWifi, tIps, tToday, tMonth, tSession, tBat;
         TextBlock mCpu, mRam, mGpu, mDown, mUp, mPing, mBat;
+        TextBlock tClock, tDate, mClock;
         readonly List<Spark> sparks = new List<Spark>();
         Spark sPing;
         CoreBars cores;
@@ -198,6 +199,7 @@ namespace SysMonApp
             sparks.Clear(); sPing = null; cores = null; batBar = null; diskRows = driveRows = null; pcName = null;
             tUptime = tCpu = tRam = tGpu = tDisk = tDown = tUp = tIf = tPingLbl = tPing = tWifi = tIps = tToday = tMonth = tSession = tBat = null;
             mCpu = mRam = mGpu = mDown = mUp = mPing = mBat = null;
+            tClock = tDate = mClock = null;
 
             bool mini = S.Mode == "Mini";
             var root = new Border
@@ -219,9 +221,23 @@ namespace SysMonApp
             var p = new StackPanel { Width = CW };
 
             var hdr = new Grid { Margin = new Thickness(0, 0, 0, 8) };
-            hdr.Children.Add(Txt(Environment.MachineName, T.Muted, 11, true));
+            if (S.ShowClock)
+            {
+                var cl = new StackPanel { Orientation = Orientation.Horizontal, ToolTip = Environment.MachineName };
+                tClock = Txt("", T.Fg, 15, true);
+                cl.Children.Add(tClock);
+                if (S.ClockDate)
+                {
+                    tDate = Txt("", T.Muted, 11);
+                    tDate.Margin = new Thickness(7, 0, 0, 2); tDate.VerticalAlignment = VerticalAlignment.Bottom;
+                    cl.Children.Add(tDate);
+                }
+                hdr.Children.Add(cl);
+            }
+            else hdr.Children.Add(Txt(Environment.MachineName, T.Muted, 11, true));
             tUptime = Txt("", T.Faint, 11);
             tUptime.HorizontalAlignment = HorizontalAlignment.Right;
+            tUptime.VerticalAlignment = VerticalAlignment.Center;
             hdr.Children.Add(tUptime);
             p.Children.Add(hdr);
 
@@ -373,6 +389,7 @@ namespace SysMonApp
                 sp.Children.Add(l); sp.Children.Add(v);
                 return v;
             };
+            if (S.ShowClock) { mClock = Txt("", T.Fg, 12, true); sp.Children.Add(mClock); }
             if (S.ShowCpu) mCpu = item("CPU", T.Cpu);
             if (S.ShowRam) mRam = item("RAM", T.Ram);
             if (S.ShowGpu) mGpu = item("GPU", T.Gpu);
@@ -416,6 +433,7 @@ namespace SysMonApp
             cm.Items.Add(chk("Lock position", S.Locked, b => S.Locked = b));
             cm.Items.Add(chk("Click-through (undo from tray icon)", S.ClickThrough, b => S.ClickThrough = b));
             cm.Items.Add(chk("Start with Windows", Program.IsStartup(), Program.SetStartup));
+            cm.Items.Add(chk("Keep PC awake (" + S.HotkeyAwake + ")", Utilities.AwakeActive, b => { if (b) Utilities.KeepAwake(null); else Utilities.StopAwake(); }));
             cm.Items.Add(new Separator());
             cm.Items.Add(mi("Reset session totals", ResetSession));
             cm.Items.Add(mi("Open Task Manager", () => { try { System.Diagnostics.Process.Start("taskmgr.exe"); } catch { } }));
@@ -479,9 +497,33 @@ namespace SysMonApp
 
         static void Set(TextBlock t, string s) { if (t != null && t.Text != s) t.Text = s; }
 
+        public void RefreshMenu()
+        {
+            var b = Content as Border;
+            if (b != null) b.ContextMenu = BuildMenu();
+        }
+
+        // clock + uptime / keep-awake badge (called twice a second and on utility changes)
+        public void RefreshHeader()
+        {
+            if (!IsVisible) return;
+            var now = DateTime.Now;
+            string time = now.ToString(S.ClockSeconds ? "T" : "t");
+            Set(tClock, time); Set(mClock, time);
+            Set(tDate, now.ToString("ddd d MMM"));
+            if (tUptime != null)
+            {
+                string badge = Utilities.Badge();
+                Set(tUptime, badge ?? "up " + Fmt.Duration(Native.GetTickCount64() / 1000.0));
+                tUptime.Foreground = badge != null ? T.Up : T.Faint;
+                tUptime.FontWeight = badge != null ? FontWeights.SemiBold : FontWeights.Normal;
+                tUptime.ToolTip = Utilities.Describe();
+            }
+        }
+
         void Render(Snapshot s)
         {
-            Set(tUptime, "up " + Fmt.Duration(Native.GetTickCount64() / 1000.0));
+            RefreshHeader();
             foreach (var sp in sparks) sp.InvalidateVisual();
             if (s == null) return;
 

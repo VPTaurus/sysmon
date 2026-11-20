@@ -1,18 +1,9 @@
 # SysMon roadmap
 
-## Requested next (2026-11-20)
-
-- [ ] **Expand a dashboard graph** – click a chart (header button or double-click) to enlarge it to fill the whole chart area, with more detail: finer resolution, more axis labels, min/avg/max for the visible window. Esc or click again to go back. Single clicks on anomaly markers keep zooming to the anomaly.
-- [ ] **Utilities**
-  - [ ] *Keep PC awake* – prevents sleep and screen-off using the Windows API (`SetThreadExecutionState`); no fake input. Timer options (30 min / 1 h / 2 h / until turned off / until a set time) and a tray/hotkey toggle.
-  - [ ] *Keep presence active (mouse nudge)* – optional tiny periodic mouse movement during a chosen time period, only after X minutes of real inactivity. Opt-in, off by default (see note below).
-- [ ] **Clock** – option to show time (and optionally date / seconds) in the floating widget header, mini strip, taskbar readout and dashboard header.
-
-> Note on the mouse nudge: simulated input can conflict with workplace policies and may be visible to endpoint-monitoring tools. Keep-awake via the Windows API covers "PC stays awake" without that risk.
-
 ## Backlog
 
-- [ ] Put the project in git (.gitignore for `dist/`, `app.ico`, `selftest.txt`; README; first commit)
+- [ ] Keep awake "until a set time" option (currently 30 min / 1 h / 2 h / 4 h / until turned off)
+- [ ] Clock in the taskbar readout (Windows already shows one there, so skipped for now)
 - [ ] Lower memory use (~220–270 MB): read processes directly instead of PDH `Process(*)`, create GPU counters lazily
 - [ ] Daily summary files so 7/30-day dashboard ranges load instantly
 - [ ] Per-monitor DPI awareness (3 monitors with possibly different scaling)
@@ -30,4 +21,8 @@
 - Anomaly detection (learned baselines + rules) and self-test (16/16 scenarios)
 - Click anomaly → zoom charts + processes at that time
 - Taskbar readout
-- Global hotkeys (Ctrl+Alt+M / W / C)
+- Global hotkeys (Ctrl+Alt+M / W / C / K)
+- Git repository, README
+- Expandable dashboard graphs (button or double-click, min/avg/max of the window, Esc to go back)
+- Utilities: keep PC awake (SetThreadExecutionState, timed or indefinite, optional screen on), opt-in presence mouse nudge within a time window after N idle minutes
+- Clock (time, optional seconds and date) in widget, Mini layout and dashboard

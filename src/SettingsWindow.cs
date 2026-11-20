@@ -35,6 +35,7 @@ namespace SysMonApp
             tabs.Items.Add(new TabItem { Header = "Network", Content = Network() });
             tabs.Items.Add(new TabItem { Header = "Alerts", Content = AlertsPage() });
             tabs.Items.Add(new TabItem { Header = "History & anomalies", Content = HistoryPage() });
+            tabs.Items.Add(new TabItem { Header = "Utilities", Content = UtilitiesPage() });
             tabs.Items.Add(new TabItem { Header = "Hotkeys", Content = HotkeysPage() });
             tabs.SelectedIndex = tab;
 
@@ -51,6 +52,9 @@ namespace SysMonApp
         UIElement General()
         {
             var p = Page();
+            var starts = new[] { "Remember", "Widget", "Taskbar", "Dashboard", "Tray" };
+            Combo(p, "When SysMon starts, show", new[] { "Same as last time", "Floating widget", "Taskbar readout", "Dashboard", "Nothing (tray icon only)" },
+                  Array.IndexOf(starts, S.StartupView), i => S.StartupView = starts[i]);
             Combo(p, "Theme", Theme.Names, Array.IndexOf(Theme.Names, S.Theme), i => S.Theme = Theme.Names[i]);
             var modes = new[] { "Full", "Compact", "Mini" };
             Combo(p, "Layout", new[] { "Full (graphs)", "Compact (no graphs)", "Mini (one line)" }, Array.IndexOf(modes, S.Mode), i => S.Mode = modes[i]);
@@ -72,6 +76,9 @@ namespace SysMonApp
             Gap(p);
             Check(p, "Show floating widget", S.WidgetVisible, b => S.WidgetVisible = b);
             Check(p, "Show compact readout on the taskbar", S.TaskbarReadout, b => S.TaskbarReadout = b);
+            Check(p, "Show clock in the widget and dashboard", S.ShowClock, b => S.ShowClock = b);
+            Check(p, "    with seconds", S.ClockSeconds, b => S.ClockSeconds = b);
+            Check(p, "    with date", S.ClockDate, b => S.ClockDate = b);
             Hint(p, "The taskbar readout sits left of the tray icons. Drag it sideways to move it; click it to open the dashboard.");
             Check(p, "Network speed in bits (Mbps) instead of bytes (MB/s)", S.Bits, b => S.Bits = b);
             Check(p, "Snap to screen edges when dragging", S.Snap, b => S.Snap = b);
@@ -79,6 +86,7 @@ namespace SysMonApp
             Check(p, "Click-through (mouse passes through the widget)", S.ClickThrough, b => S.ClickThrough = b);
             Hint(p, "When click-through is on, use the tray icon to turn it off again.");
             Check(p, "Start with Windows", Program.IsStartup(), Program.SetStartup);
+            Hint(p, "\"When SysMon starts\" applies each time the app starts, including with Windows. You can still show or hide everything afterwards from the tray icon.");
             return p;
         }
 
@@ -170,6 +178,58 @@ namespace SysMonApp
             return p;
         }
 
+        UIElement UtilitiesPage()
+        {
+            var p = Page();
+            p.Children.Add(new TextBlock { Text = "Keep PC awake", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 2) });
+            var choices = new[] { "Off", "30 minutes", "1 hour", "2 hours", "4 hours", "Until I turn it off" };
+            var spans = new TimeSpan?[] { null, TimeSpan.FromMinutes(30), TimeSpan.FromHours(1), TimeSpan.FromHours(2), TimeSpan.FromHours(4), null };
+            var statusText = new TextBlock { Foreground = Brushes.Gray, FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
+            Action showStatus = () => statusText.Text = Utilities.Describe();
+            var g = LabeledRow(p, "Keep awake for");
+            var c = new ComboBox { Width = 180, ItemsSource = choices, SelectedIndex = !Utilities.AwakeActive ? 0 : Utilities.AwakeForever ? 5 : -1 };
+            c.SelectionChanged += (s, e) =>
+            {
+                int i = c.SelectedIndex;
+                if (i == 0) Utilities.StopAwake();
+                else if (i == 5) Utilities.KeepAwake(null);
+                else if (i > 0) Utilities.KeepAwake(spans[i]);
+                showStatus();
+            };
+            Grid.SetColumn(c, 1); g.Children.Add(c);
+            p.Children.Add(statusText);
+            showStatus();
+            Check(p, "Also keep the screen on (not only the PC)", S.KeepAwakeScreen, b => S.KeepAwakeScreen = b);
+            Hint(p, "Uses the standard Windows power request (like a video player does), no simulated input. Also on the tray menu and " + S.HotkeyAwake + ".");
+
+            Gap(p); Gap(p);
+            p.Children.Add(new TextBlock { Text = "Presence nudge (keeps Teams and similar apps \"Available\")", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 2) });
+            Check(p, "Nudge the mouse by 1 pixel when I'm idle", S.NudgeOn, b => S.NudgeOn = b);
+            TimeText(p, "Only between (from)", S.NudgeFrom, v => S.NudgeFrom = v);
+            TimeText(p, "...and (to)", S.NudgeTo, v => S.NudgeTo = v);
+            Check(p, "Weekdays only", S.NudgeWeekdays, b => S.NudgeWeekdays = b);
+            Number(p, "After this many idle minutes", S.NudgeIdleMin, 1, 30, v => S.NudgeIdleMin = v);
+            Hint(p, "Teams switches to Away after about 5 minutes without input, so 4 minutes works well. The nudge only happens when you haven't touched the mouse or keyboard, and moves the pointer 1 px there and back.");
+            Hint(p, "Note: simulated input may be against your organisation's policies and can be visible to device-monitoring software. Keep awake (above) does not use simulated input.");
+            return p;
+        }
+
+        void TimeText(Panel p, string label, string v, Action<string> set)
+        {
+            var g = LabeledRow(p, label);
+            var t = new TextBox { Width = 70, Text = v, Padding = new Thickness(2), HorizontalContentAlignment = HorizontalAlignment.Center };
+            Action commit = () =>
+            {
+                TimeSpan ts;
+                if (!Utilities.TryTime(t.Text, out ts)) { t.Text = v; return; }
+                t.Text = ts.ToString(@"hh\:mm");
+                if (t.Text != v) { v = t.Text; set(v); Changed(); }
+            };
+            t.LostFocus += (s, e) => commit();
+            t.KeyDown += (s, e) => { if (e.Key == Key.Enter) commit(); };
+            Grid.SetColumn(t, 1); g.Children.Add(t);
+        }
+
         UIElement HotkeysPage()
         {
             var p = Page();
@@ -179,11 +239,12 @@ namespace SysMonApp
             HotkeyBox(p, "Open / close dashboard", "dashboard", S.HotkeyDashboard, v => S.HotkeyDashboard = v);
             HotkeyBox(p, "Show / hide floating widget", "widget", S.HotkeyWidget, v => S.HotkeyWidget = v);
             HotkeyBox(p, "Turn click-through on / off", "clickthrough", S.HotkeyClickThrough, v => S.HotkeyClickThrough = v);
+            HotkeyBox(p, "Keep PC awake on / off", "awake", S.HotkeyAwake, v => S.HotkeyAwake = v);
             Gap(p);
             var reset = new Button { Content = "Restore defaults", Padding = new Thickness(10, 3, 10, 3), HorizontalAlignment = HorizontalAlignment.Left };
             reset.Click += (s, e) =>
             {
-                S.HotkeyDashboard = "Ctrl+Alt+M"; S.HotkeyWidget = "Ctrl+Alt+W"; S.HotkeyClickThrough = "Ctrl+Alt+C";
+                S.HotkeyDashboard = "Ctrl+Alt+M"; S.HotkeyWidget = "Ctrl+Alt+W"; S.HotkeyClickThrough = "Ctrl+Alt+C"; S.HotkeyAwake = "Ctrl+Alt+K";
                 Program.Apply(); Build(tabs.SelectedIndex);
             };
             p.Children.Add(reset);

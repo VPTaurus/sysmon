@@ -46,7 +46,7 @@ namespace SysMonApp
         readonly Dictionary<string, TextBlock[]> cards = new Dictionary<string, TextBlock[]>();
         TimeChart cCpu, cRam, cGpu, cDisk, cNet, cPing;
         StackPanel anomList, rangeBar;
-        TextBlock anomTitle, subtitle, status, fsLabel;
+        TextBlock anomTitle, subtitle, status, fsLabel, utilText, dashClock, dashDate;
         TextBlock[,] procCells;
         TextBlock procTitle, focusText;
         Border focusBar;
@@ -69,8 +69,9 @@ namespace SysMonApp
             PreviewKeyDown += (s, e) =>
             {
                 if (e.Key == Key.F11) { ToggleFullscreen(); e.Handled = true; }
-                else if (e.Key == Key.Escape && fullscreen) { ToggleFullscreen(); e.Handled = true; }
+                else if (e.Key == Key.Escape && expanded >= 0) { ToggleExpand(expanded); e.Handled = true; }
                 else if (e.Key == Key.Escape && focus != null) { Unfocus(); e.Handled = true; }
+                else if (e.Key == Key.Escape && fullscreen) { ToggleFullscreen(); e.Handled = true; }
             };
             Build();
             Load();
@@ -130,7 +131,14 @@ namespace SysMonApp
             // header
             var hdr = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
             var titleSp = new StackPanel();
-            titleSp.Children.Add(Txt("SysMon", T.Fg, 22, true));
+            var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+            titleRow.Children.Add(Txt("SysMon", T.Fg, 22, true));
+            dashClock = Txt("", T.Fg, 22);
+            dashClock.Margin = new Thickness(18, 0, 0, 0);
+            dashDate = Txt("", T.Muted, 13);
+            dashDate.Margin = new Thickness(10, 0, 0, 3); dashDate.VerticalAlignment = VerticalAlignment.Bottom;
+            titleRow.Children.Add(dashClock); titleRow.Children.Add(dashDate);
+            titleSp.Children.Add(titleRow);
             subtitle = Txt("", T.Faint, 12);
             titleSp.Children.Add(subtitle);
             DockPanel.SetDock(titleSp, Dock.Left);
@@ -187,6 +195,8 @@ namespace SysMonApp
             root.Children.Add(main);
 
             var charts = new UniformGrid { Columns = 2, Rows = 3, Margin = new Thickness(-4, -4, 4, -4) };
+            chartGrid = charts;
+            chartPanels.Clear(); chartStats.Clear(); expandLabels.Clear();
             Func<double, string> pct = Fmt.Pct, rate = v => Fmt.Rate(v, false), ms = v => v.ToString("0") + " ms";
             cCpu = AddChart(charts, "CPU", 100, 1, pct, new[] { "average", "peak" }, new[] { T.Cpu, Theme.Fill(T.Cpu, 0x99) });
             cRam = AddChart(charts, "Memory", 100, 1, pct, new[] { "used" }, new[] { T.Ram });
@@ -195,6 +205,7 @@ namespace SysMonApp
             cNet = AddChart(charts, "Network", double.NaN, 64 << 10, rate, new[] { "download", "upload" }, new[] { T.Down, T.Up });
             cPing = AddChart(charts, "Ping  " + S.PingTarget, double.NaN, 20, ms, new[] { "average", "peak", "packet loss" }, new[] { T.Ping, Theme.Fill(T.Ping, 0x99), T.Bad });
             main.Children.Add(charts);
+            ApplyExpand();
 
             // side panel
             var side = new Grid();
@@ -226,13 +237,19 @@ namespace SysMonApp
             Grid.SetRow(cpb, 2);
             side.Children.Add(cpb);
 
+            var statusRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
+            utilText = Txt("", T.Faint, 11);
+            DockPanel.SetDock(utilText, Dock.Right);
+            statusRow.Children.Add(utilText);
             status = Txt("", T.Faint, 11);
-            status.Margin = new Thickness(0, 6, 0, 0);
-            Grid.SetRow(status, 4);
-            root.Children.Add(status);
+            status.TextTrimming = TextTrimming.CharacterEllipsis;
+            statusRow.Children.Add(status);
+            Grid.SetRow(statusRow, 4);
+            root.Children.Add(statusRow);
 
             Content = root;
             UpdateSubtitle();
+            RefreshHeader();
         }
 
         public void SetRange(string r)
@@ -264,25 +281,93 @@ namespace SysMonApp
             cards[key] = new[] { v, sub };
         }
 
+        // ---- expandable charts
+        UniformGrid chartGrid;
+        readonly List<Border> chartPanels = new List<Border>();
+        readonly List<TextBlock> chartStats = new List<TextBlock>(), expandLabels = new List<TextBlock>();
+        int expanded = -1;   // index of the chart filling the whole chart area, -1 = grid
+        TimeChart[] Charts { get { return new[] { cCpu, cRam, cGpu, cDisk, cNet, cPing }; } }
+
         TimeChart AddChart(Panel p, string title, double fixedMax, double minMax, Func<double, string> fmt, string[] names, Brush[] colors)
         {
+            int idx = chartPanels.Count;
             var dp = new DockPanel();
-            var head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
+            var headRow = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+
+            var btnText = Txt("⤢", T.Muted, 12, true);
+            var btn = new Border { Child = btnText, Padding = new Thickness(8, 1, 8, 2), CornerRadius = new CornerRadius(10), Cursor = Cursors.Hand,
+                                   Background = Brushes.Transparent, ToolTip = "Expand this graph (or double-click it)" };
+            btn.MouseEnter += (s, e) => btn.Background = Theme.Fill(T.Fg, 0x20);
+            btn.MouseLeave += (s, e) => btn.Background = Brushes.Transparent;
+            btn.MouseLeftButtonUp += (s, e) => ToggleExpand(idx);
+            DockPanel.SetDock(btn, Dock.Right);
+            headRow.Children.Add(btn);
+
+            var stats = Txt("", T.Fg, 11.5);
+            stats.Margin = new Thickness(0, 0, 12, 0);
+            stats.Visibility = Visibility.Collapsed;
+            DockPanel.SetDock(stats, Dock.Right);
+            headRow.Children.Add(stats);
+
+            var head = new StackPanel { Orientation = Orientation.Horizontal };
             head.Children.Add(Txt(title.ToUpper(), T.Muted, 11, true));
             for (int i = 0; i < names.Length; i++)
             {
                 head.Children.Add(new Rectangle { Width = 10, Height = 3, Fill = colors[i], Margin = new Thickness(14, 1, 5, 0), VerticalAlignment = VerticalAlignment.Center });
                 head.Children.Add(Txt(names[i], T.Faint, 11));
             }
-            DockPanel.SetDock(head, Dock.Top);
-            dp.Children.Add(head);
+            headRow.Children.Add(head);
+            DockPanel.SetDock(headRow, Dock.Top);
+            dp.Children.Add(headRow);
+
             var c = new TimeChart { FixedMax = fixedMax, MinMax = minMax, Format = fmt, Th = T };
             c.MarkClicked = a => { if (SameAnomaly(a, focus)) Unfocus(); else FocusOn(a); };
+            c.MouseLeftButtonDown += (s, e) => { if (e.ClickCount == 2) { ToggleExpand(idx); e.Handled = true; } };
             dp.Children.Add(c);
             var b = Panel(dp, new Thickness(4));
             b.Padding = new Thickness(8, 8, 10, 4);
             p.Children.Add(b);
+            chartPanels.Add(b); chartStats.Add(stats); expandLabels.Add(btnText);
             return c;
+        }
+
+        void ToggleExpand(int i)
+        {
+            expanded = expanded == i ? -1 : i;
+            ApplyExpand();
+            UpdateLayout();   // so the chart's new width is used for the data resolution
+            Redraw();
+        }
+
+        void ApplyExpand()
+        {
+            if (chartGrid == null) return;
+            bool any = expanded >= 0;
+            chartGrid.Rows = any ? 1 : 3; chartGrid.Columns = any ? 1 : 2;
+            var charts = Charts;
+            for (int j = 0; j < chartPanels.Count; j++)
+            {
+                bool me = j == expanded;
+                chartPanels[j].Visibility = !any || me ? Visibility.Visible : Visibility.Collapsed;
+                charts[j].YTicks = me ? 8 : 4;
+                expandLabels[j].Text = me ? "✕  Back to all graphs (Esc)" : "⤢";
+                chartStats[j].Visibility = me ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        // min / avg / max of each series in the visible window, shown in an expanded chart's header
+        void UpdateExpandedStats()
+        {
+            if (expanded < 0) return;
+            var c = Charts[expanded];
+            var parts = new List<string>();
+            foreach (var s in c.Series)
+            {
+                var v = s.V.Where(x => !double.IsNaN(x)).ToList();
+                if (v.Count == 0) continue;
+                parts.Add((s.Name ?? "") + ":  min " + c.Format(v.Min()) + "   avg " + c.Format(v.Average()) + "   max " + c.Format(v.Max()));
+            }
+            chartStats[expanded].Text = parts.Count > 0 ? string.Join("        ", parts) : "no data";
         }
 
         UIElement BuildProcTable()
@@ -324,6 +409,18 @@ namespace SysMonApp
             t.MouseLeftButtonUp += (s, e) => { procSort = key; Build(); Redraw(); };
             Grid.SetColumn(t, col);
             g.Children.Add(t);
+        }
+
+        public void RefreshHeader()
+        {
+            if (dashClock == null) return;
+            var now = DateTime.Now;
+            dashClock.Visibility = dashDate.Visibility = S.ShowClock ? Visibility.Visible : Visibility.Collapsed;
+            dashClock.Text = now.ToString(S.ClockSeconds ? "T" : "t");
+            dashDate.Text = S.ClockDate ? now.ToString("dddd, d MMMM") : "";
+            string badge = Utilities.Badge();
+            utilText.Text = Utilities.Describe();
+            utilText.Foreground = badge != null ? T.Up : T.Faint;
         }
 
         void UpdateSubtitle()
@@ -520,6 +617,7 @@ namespace SysMonApp
             SetChart(cPing, from, to, gap, new[] { "ping" }, Sr(r => r.Ping, false), Sr(r => r.PingMax, true));
             StyleChart(cPing, "avg", T.Ping, true, false, "peak", Theme.Fill(T.Ping, 0x99), false, true);
             cPing.LossT = view.Where(r => r.PingLoss > 0).Select(r => TimeChart.Sec(r.T)).ToArray();
+            UpdateExpandedStats();
 
             Func<double, string> rate = v => Fmt.Rate(v, false), ms = v => v.ToString("0") + " ms";
             cards["cpu"][1].Text = Stats(view.Select(r => r.Cpu), Fmt.Pct);

@@ -16,7 +16,12 @@ statistics logging and anomaly detection. Single small `.exe`, no admin rights, 
 - **Anomaly detection** – learned per-metric baselines (EWMA, log-space for rates) plus rules: sustained overload,
   connection loss / packet loss, memory leaks, new CPU-heavy processes, disk-space and battery drain.
 - **Alerts** – Windows notifications with thresholds and cooldown.
-- **Global hotkeys** – Ctrl+Alt+M dashboard, Ctrl+Alt+W widget, Ctrl+Alt+C click-through (configurable).
+- **Expandable graphs** – button or double-click makes a dashboard chart fill the chart area with min/avg/max.
+- **Utilities** – keep PC awake (Windows power request, timed or until off, optional screen on) and an opt-in
+  presence nudge (1 px mouse move after N idle minutes inside a daily time window).
+- **Clock** – optional time / seconds / date in the widget, Mini layout and dashboard.
+- **Start view** – start with the widget, taskbar readout, dashboard, tray icon only, or the same as last time.
+- **Global hotkeys** – Ctrl+Alt+M dashboard, Ctrl+Alt+W widget, Ctrl+Alt+C click-through, Ctrl+Alt+K keep awake (configurable).
 
 ## Build
 
@@ -58,6 +63,7 @@ Uses `csc.exe` from `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319` (C# 5), so k
 | `src/Controls.cs` | sparkline, core bars, mini bar |
 | `src/Core.cs` | settings, themes, formatting, ring buffer |
 | `src/SettingsWindow.cs`, `src/Hotkeys.cs` | settings UI, global hotkeys |
+| `src/Utilities.cs` | keep awake, presence nudge |
 | `legacy/SysMon.ps1` | first PowerShell prototype |
 
 See [ROADMAP.md](ROADMAP.md) for planned work.
